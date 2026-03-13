@@ -28,7 +28,7 @@ func TestOllamaEmbedder_Embed(t *testing.T) {
 		if req.Model != "nomic-embed-text" {
 			t.Errorf("unexpected model: %s", req.Model)
 		}
-		json.NewEncoder(w).Encode(map[string]any{"embeddings": want})
+		_ = json.NewEncoder(w).Encode(map[string]any{"embeddings": want})
 	}))
 	defer srv.Close()
 
@@ -68,7 +68,7 @@ func TestOllamaEmbedder_HTTPError(t *testing.T) {
 
 func TestOllamaEmbedder_TrailingSlash(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{"embeddings": [][]float32{{1, 0}}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"embeddings": [][]float32{{1, 0}}})
 	}))
 	defer srv.Close()
 

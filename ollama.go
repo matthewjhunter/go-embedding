@@ -48,7 +48,7 @@ func (o *OllamaEmbedder) Embed(ctx context.Context, texts []string) ([][]float32
 	if err != nil {
 		return nil, fmt.Errorf("ollama embed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("ollama embed: unexpected status %d", resp.StatusCode)
