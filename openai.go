@@ -23,6 +23,9 @@ type OpenAIEmbedder struct {
 
 // NewOpenAIEmbedder creates an embedder that calls POST /v1/embeddings.
 // apiKey may be empty for unauthenticated local endpoints.
+//
+// Deprecated: prefer New(Config{Backend: BackendOpenAI, BaseURL: baseURL, APIKey: apiKey, Model: model}).
+// This constructor will be removed in v1.0.
 func NewOpenAIEmbedder(baseURL, apiKey, model string) *OpenAIEmbedder {
 	return &OpenAIEmbedder{
 		baseURL: strings.TrimRight(baseURL, "/"),

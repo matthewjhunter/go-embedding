@@ -17,6 +17,9 @@ type OllamaEmbedder struct {
 }
 
 // NewOllamaEmbedder creates an embedder that calls the Ollama /api/embed endpoint.
+//
+// Deprecated: prefer New(Config{Backend: BackendOllama, BaseURL: baseURL, Model: model}).
+// This constructor will be removed in v1.0.
 func NewOllamaEmbedder(baseURL, model string) *OllamaEmbedder {
 	return &OllamaEmbedder{
 		baseURL: baseURL,
