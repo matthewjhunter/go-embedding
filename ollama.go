@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
 )
 
 // OllamaEmbedder implements Embedder using the Ollama HTTP API (POST /api/embed).
@@ -14,6 +15,7 @@ type OllamaEmbedder struct {
 	baseURL string
 	model   string
 	client  *http.Client
+	dim     atomic.Int32
 }
 
 // NewOllamaEmbedder creates an embedder that calls the Ollama /api/embed endpoint.
@@ -79,8 +81,18 @@ func (e *OllamaEmbedder) Embed(ctx context.Context, texts []string) ([][]float32
 		return nil, fmt.Errorf("ollama embed: empty response")
 	}
 
+	if d := len(embedResp.Embeddings[0]); d > 0 {
+		e.dim.Store(int32(d))
+	}
+
 	return embedResp.Embeddings, nil
 }
 
 // Model returns the configured embedding model name.
 func (e *OllamaEmbedder) Model() string { return e.model }
+
+// Fingerprint returns the model name and vector dimension. Dim is 0 until
+// the first successful Embed call.
+func (e *OllamaEmbedder) Fingerprint() Fingerprint {
+	return Fingerprint{Model: e.model, Dim: int(e.dim.Load())}
+}

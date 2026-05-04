@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync/atomic"
 )
 
 // OpenAIEmbedder implements Embedder using the OpenAI-compatible embeddings API
@@ -19,6 +20,7 @@ type OpenAIEmbedder struct {
 	apiKey  string
 	model   string
 	client  *http.Client
+	dim     atomic.Int32
 }
 
 // NewOpenAIEmbedder creates an embedder that calls POST /v1/embeddings.
@@ -101,8 +103,19 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, texts []string) ([][]float32
 	for i, d := range embedResp.Data {
 		results[i] = d.Embedding
 	}
+
+	if d := len(results[0]); d > 0 {
+		e.dim.Store(int32(d))
+	}
+
 	return results, nil
 }
 
 // Model returns the configured embedding model name.
 func (e *OpenAIEmbedder) Model() string { return e.model }
+
+// Fingerprint returns the model name and vector dimension. Dim is 0 until
+// the first successful Embed call.
+func (e *OpenAIEmbedder) Fingerprint() Fingerprint {
+	return Fingerprint{Model: e.model, Dim: int(e.dim.Load())}
+}

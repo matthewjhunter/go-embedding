@@ -14,8 +14,14 @@ import (
 type Embedder interface {
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
 	// Model returns a stable identifier for the embedding model (e.g.
-	// "embeddinggemma"). Callers may record this to detect model changes.
+	// "nomic-embed-text").
 	Model() string
+	// Fingerprint returns the model identity plus vector dimension. Dim is
+	// populated after the first successful Embed; it is 0 until then.
+	// Stores should persist this value and check it on open via
+	// CheckFingerprint to catch silent garbage rankings caused by an
+	// embedding-model swap.
+	Fingerprint() Fingerprint
 }
 
 // embedMaxRetries is the number of retries for transient embedding failures
