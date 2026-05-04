@@ -32,14 +32,21 @@ func ConfigFromEnv() (Config, error) {
 	return ConfigFromEnvPrefix(DefaultEnvPrefix)
 }
 
-// ConfigFromEnvPrefix is ConfigFromEnv with a caller-supplied prefix.
-// E.g. ConfigFromEnvPrefix("MEMSTORE_EMBED") reads MEMSTORE_EMBED_BACKEND,
-// MEMSTORE_EMBED_BASE_URL, etc. Returns an error only on parse failures
-// (unknown backend, malformed bool); missing vars fall back to DefaultConfig.
+// ConfigFromEnvPrefix is ConfigFromEnv with a caller-supplied prefix and a
+// per-field fallback chain: {prefix}_FOO → EMBEDDING_FOO → DefaultConfig.
+//
+// E.g. ConfigFromEnvPrefix("MEMSTORE_EMBED") reads MEMSTORE_EMBED_BASE_URL
+// first; if unset, falls back to EMBEDDING_BASE_URL; if still unset, takes
+// the value from DefaultConfig. This means one canonical env set
+// (EMBEDDING_*) works for every app, and any app can override just the
+// fields it needs to differ.
+//
+// Returns an error only on parse failures (unknown backend, malformed
+// bool); missing vars fall back to DefaultConfig.
 func ConfigFromEnvPrefix(prefix string) (Config, error) {
 	cfg := DefaultConfig()
 
-	if v := lookup(prefix + envSuffixBackend); v != "" {
+	if v, src := envCascade(prefix, envSuffixBackend); v != "" {
 		switch strings.ToLower(v) {
 		case string(BackendOllama):
 			cfg.Backend = BackendOllama
@@ -47,26 +54,26 @@ func ConfigFromEnvPrefix(prefix string) (Config, error) {
 			cfg.Backend = BackendOpenAI
 		default:
 			return Config{}, fmt.Errorf(
-				"embedding: unknown backend %q in %s%s (want ollama|openai)",
-				v, prefix, envSuffixBackend,
+				"embedding: unknown backend %q in %s (want ollama|openai)",
+				v, src,
 			)
 		}
 	}
-	if v := lookup(prefix + envSuffixBaseURL); v != "" {
+	if v, _ := envCascade(prefix, envSuffixBaseURL); v != "" {
 		cfg.BaseURL = v
 	}
-	if v := lookup(prefix + envSuffixAPIKey); v != "" {
+	if v, _ := envCascade(prefix, envSuffixAPIKey); v != "" {
 		cfg.APIKey = v
 	}
-	if v := lookup(prefix + envSuffixModel); v != "" {
+	if v, _ := envCascade(prefix, envSuffixModel); v != "" {
 		cfg.Model = v
 	}
-	if v := lookup(prefix + envSuffixStrict); v != "" {
+	if v, src := envCascade(prefix, envSuffixStrict); v != "" {
 		b, err := strconv.ParseBool(v)
 		if err != nil {
 			return Config{}, fmt.Errorf(
-				"embedding: invalid %s%s value %q: %w",
-				prefix, envSuffixStrict, v, err,
+				"embedding: invalid %s value %q: %w",
+				src, v, err,
 			)
 		}
 		cfg.Strict = b
@@ -74,9 +81,21 @@ func ConfigFromEnvPrefix(prefix string) (Config, error) {
 	return cfg, nil
 }
 
-// lookup returns the value of the named env var, or "" if unset or empty.
-// We treat empty-string as unset so a caller exporting `EMBEDDING_API_KEY=`
-// to wipe a stale key from the parent shell behaves the same as not setting it.
-func lookup(key string) string {
-	return os.Getenv(key)
+// envCascade looks up suffix under prefix first, then under DefaultEnvPrefix.
+// Returns the first non-empty value and the env-var name it came from. If
+// prefix already equals DefaultEnvPrefix only one lookup is performed. Empty
+// strings are treated as unset.
+func envCascade(prefix, suffix string) (value, source string) {
+	key := prefix + suffix
+	if v := os.Getenv(key); v != "" {
+		return v, key
+	}
+	if prefix == DefaultEnvPrefix {
+		return "", ""
+	}
+	canonical := DefaultEnvPrefix + suffix
+	if v := os.Getenv(canonical); v != "" {
+		return v, canonical
+	}
+	return "", ""
 }

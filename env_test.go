@@ -150,7 +150,9 @@ func TestConfigFromEnvPrefix_UsesGivenPrefix(t *testing.T) {
 	}
 }
 
-func TestConfigFromEnvPrefix_DoesNotLeakDefaultPrefix(t *testing.T) {
+func TestConfigFromEnvPrefix_FallsBackToCanonical(t *testing.T) {
+	// No prefixed value set; ConfigFromEnvPrefix should pick up the canonical
+	// EMBEDDING_BACKEND so a single shared env can drive every app.
 	t.Setenv("EMBEDDING_BACKEND", "openai")
 	t.Setenv("MYAPP_EMBED_BACKEND", "")
 
@@ -158,8 +160,73 @@ func TestConfigFromEnvPrefix_DoesNotLeakDefaultPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConfigFromEnvPrefix: %v", err)
 	}
-	if cfg.Backend != BackendOllama {
-		t.Errorf("Backend: got %q, want default (prefix isolation broken)", cfg.Backend)
+	if cfg.Backend != BackendOpenAI {
+		t.Errorf("Backend: got %q, want openai (canonical fallback should apply)", cfg.Backend)
+	}
+}
+
+func TestConfigFromEnvPrefix_PrefixWinsOverCanonical(t *testing.T) {
+	// Both set; the prefixed value must override the canonical.
+	t.Setenv("EMBEDDING_BACKEND", "ollama")
+	t.Setenv("MYAPP_EMBED_BACKEND", "openai")
+
+	cfg, err := ConfigFromEnvPrefix("MYAPP_EMBED")
+	if err != nil {
+		t.Fatalf("ConfigFromEnvPrefix: %v", err)
+	}
+	if cfg.Backend != BackendOpenAI {
+		t.Errorf("Backend: got %q, want openai (prefix should override canonical)", cfg.Backend)
+	}
+}
+
+func TestConfigFromEnvPrefix_PerFieldCascade(t *testing.T) {
+	// Mix sources: BASE_URL only set in canonical, MODEL only set in prefix.
+	// Result should combine both — proving the cascade is per-field, not
+	// all-or-nothing.
+	t.Setenv("EMBEDDING_BASE_URL", "http://canonical-host:11434")
+	t.Setenv("EMBEDDING_MODEL", "")
+	t.Setenv("MYAPP_EMBED_BASE_URL", "")
+	t.Setenv("MYAPP_EMBED_MODEL", "custom-model")
+
+	cfg, err := ConfigFromEnvPrefix("MYAPP_EMBED")
+	if err != nil {
+		t.Fatalf("ConfigFromEnvPrefix: %v", err)
+	}
+	if cfg.BaseURL != "http://canonical-host:11434" {
+		t.Errorf("BaseURL: got %q, want canonical fallback", cfg.BaseURL)
+	}
+	if cfg.Model != "custom-model" {
+		t.Errorf("Model: got %q, want prefix override", cfg.Model)
+	}
+}
+
+func TestConfigFromEnvPrefix_BadPrefixedBackend_ErrorMessageNamesPrefixedKey(t *testing.T) {
+	// When a parse error involves the prefixed value, the error should
+	// name the prefixed key so the user knows which to fix.
+	t.Setenv("EMBEDDING_BACKEND", "ollama")
+	t.Setenv("MYAPP_EMBED_BACKEND", "cohere")
+
+	_, err := ConfigFromEnvPrefix("MYAPP_EMBED")
+	if err == nil {
+		t.Fatal("expected error for bad prefixed backend")
+	}
+	if !strings.Contains(err.Error(), "MYAPP_EMBED_BACKEND") {
+		t.Errorf("error should name MYAPP_EMBED_BACKEND, got: %v", err)
+	}
+}
+
+func TestConfigFromEnvPrefix_BadCanonicalBackend_ErrorMessageNamesCanonicalKey(t *testing.T) {
+	// When the cascade falls through to a bad canonical value, the error
+	// should name EMBEDDING_BACKEND so the user fixes the right one.
+	t.Setenv("EMBEDDING_BACKEND", "cohere")
+	t.Setenv("MYAPP_EMBED_BACKEND", "")
+
+	_, err := ConfigFromEnvPrefix("MYAPP_EMBED")
+	if err == nil {
+		t.Fatal("expected error for bad canonical backend")
+	}
+	if !strings.Contains(err.Error(), "EMBEDDING_BACKEND") {
+		t.Errorf("error should name EMBEDDING_BACKEND, got: %v", err)
 	}
 }
 

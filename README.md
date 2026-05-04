@@ -68,6 +68,12 @@ cfg, _ := embedding.ConfigFromEnvPrefix("MEMSTORE_EMBED")
 // reads MEMSTORE_EMBED_BACKEND, MEMSTORE_EMBED_BASE_URL, …
 ```
 
+`ConfigFromEnvPrefix` cascades per field: prefixed key → canonical
+`EMBEDDING_*` key → `DefaultConfig`. So you can set
+`EMBEDDING_BASE_URL` once for every app and override only `MEMSTORE_EMBED_MODEL`
+for the one app that needs a different model — all the other fields
+still come from the shared canonical env.
+
 ## Backends
 
 | Backend | Endpoint | Authentication |
