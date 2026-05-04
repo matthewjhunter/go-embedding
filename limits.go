@@ -3,6 +3,7 @@ package embedding
 import (
 	"fmt"
 	"log"
+	"sync"
 )
 
 // Limits describes the maximum input size a model accepts in a single
@@ -16,28 +17,42 @@ type Limits struct {
 	MaxTokens int
 }
 
-// modelLimits is the package-level registry. Callers may inspect it via
-// LookupLimits and extend it via RegisterLimits.
-var modelLimits = map[string]Limits{
-	// nomic-embed-text family — 8000-byte cap is conservative; the model
-	// supports more but quality degrades on longer inputs and the prefix
-	// usually carries the signal.
-	"nomic-embed-text":    {MaxBytes: 8000, MaxTokens: 2000},
-	"nomic-embed-text-v2": {MaxBytes: 8000, MaxTokens: 2000},
-	"embeddinggemma":      {MaxBytes: 8000, MaxTokens: 2000},
-}
+// modelLimits is the package-level registry. Reads go through LookupLimits,
+// writes through RegisterLimits — both take modelLimitsMu so the registry
+// is safe to mutate at any time, not only at startup.
+var (
+	modelLimitsMu sync.RWMutex
+	modelLimits   = map[string]Limits{
+		"nomic-embed-text":    {MaxBytes: 8000, MaxTokens: 2000},
+		"nomic-embed-text-v2": {MaxBytes: 8000, MaxTokens: 2000},
+		"embeddinggemma":      {MaxBytes: 8000, MaxTokens: 2000},
+	}
+)
 
 // LookupLimits returns the registered limits for model, or a zero Limits if
 // the model is unknown. A zero Limits means no enforcement is applied.
 func LookupLimits(model string) Limits {
+	modelLimitsMu.RLock()
+	defer modelLimitsMu.RUnlock()
 	return modelLimits[model]
 }
 
-// RegisterLimits adds or overrides the limits for a model. Useful for
-// custom or unrecognised models. Not safe for concurrent use during runtime;
-// call at process startup.
+// RegisterLimits adds or overrides the limits for a model. Safe to call at
+// any time — concurrent embedders will pick up the new limits on their next
+// LookupLimits call.
 func RegisterLimits(model string, l Limits) {
+	modelLimitsMu.Lock()
+	defer modelLimitsMu.Unlock()
 	modelLimits[model] = l
+}
+
+// unregisterLimits removes a model from the registry. Used by tests; not
+// part of the public API because production code should use RegisterLimits
+// to set explicit limits rather than fall back to "unknown model" behavior.
+func unregisterLimits(model string) {
+	modelLimitsMu.Lock()
+	defer modelLimitsMu.Unlock()
+	delete(modelLimits, model)
 }
 
 // applyLimits enforces limits against texts. In Strict mode, oversize input

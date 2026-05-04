@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -37,11 +38,39 @@ func TestLookupLimits_Unknown(t *testing.T) {
 
 func TestRegisterLimits(t *testing.T) {
 	const name = "test-only-custom-embedder"
-	t.Cleanup(func() { delete(modelLimits, name) })
+	t.Cleanup(func() { unregisterLimits(name) })
 	RegisterLimits(name, Limits{MaxBytes: 1234})
 	if got := LookupLimits(name); got.MaxBytes != 1234 {
 		t.Errorf("after RegisterLimits: got %d, want 1234", got.MaxBytes)
 	}
+}
+
+func TestRegisterLimits_ConcurrentReadWrite(t *testing.T) {
+	// Without the mutex this fails under -race. With it, every goroutine
+	// observes a consistent map.
+	const name = "test-only-race-embedder"
+	t.Cleanup(func() { unregisterLimits(name) })
+
+	const goroutines = 8
+	const iterations = 200
+	var wg sync.WaitGroup
+	wg.Add(goroutines * 2)
+
+	for i := 0; i < goroutines; i++ {
+		go func(seed int) {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				RegisterLimits(name, Limits{MaxBytes: seed*1000 + j})
+			}
+		}(i)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				_ = LookupLimits(name)
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestEmbed_TruncatesByDefault_Ollama(t *testing.T) {
