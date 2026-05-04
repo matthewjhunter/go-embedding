@@ -39,6 +39,35 @@ e, _ := embedding.New(embedding.DefaultConfig())
 External callers should prefer constructing `Config` explicitly so a
 default change in this module doesn't surprise them on a `go get -u`.
 
+## Env-driven configuration
+
+To share one embedding configuration across multiple apps, set the
+canonical env vars once and have every app read them:
+
+```sh
+export EMBEDDING_BACKEND=ollama
+export EMBEDDING_BASE_URL=http://gpu-host:11434
+export EMBEDDING_MODEL=nomic-embed-text
+```
+
+```go
+cfg, err := embedding.ConfigFromEnv()
+if err != nil { log.Fatal(err) }
+e, err := embedding.New(cfg)
+```
+
+Recognised vars: `EMBEDDING_BACKEND`, `EMBEDDING_BASE_URL`,
+`EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_STRICT`. Unset (or
+empty) vars fall back to `DefaultConfig`. Unknown backend names or
+unparseable bools return an error.
+
+For per-app namespaces use a custom prefix:
+
+```go
+cfg, _ := embedding.ConfigFromEnvPrefix("MEMSTORE_EMBED")
+// reads MEMSTORE_EMBED_BACKEND, MEMSTORE_EMBED_BASE_URL, …
+```
+
 ## Backends
 
 | Backend | Endpoint | Authentication |
