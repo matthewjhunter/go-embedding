@@ -21,6 +21,7 @@ type OpenAIEmbedder struct {
 	model   string
 	client  *http.Client
 	dim     atomic.Int32
+	strict  bool
 }
 
 // NewOpenAIEmbedder creates an embedder that calls POST /v1/embeddings.
@@ -51,6 +52,11 @@ type openAIEmbedResponse struct {
 
 // Embed generates vector embeddings for the given texts via the OpenAI API.
 func (e *OpenAIEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	texts, err := applyLimits(texts, e.model, e.strict)
+	if err != nil {
+		return nil, err
+	}
+
 	reqBody := openAIEmbedRequest{
 		Model: e.model,
 		Input: texts,

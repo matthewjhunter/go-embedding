@@ -19,11 +19,17 @@ const (
 // Backend, BaseURL, and Model are required. APIKey is optional and only
 // meaningful for backends that authenticate (it is silently ignored by
 // BackendOllama).
+//
+// Strict controls how the embedder reacts to text exceeding the model's
+// registered Limits. When false (default), oversize text is truncated to
+// the limit and a log line is emitted. When true, Embed returns an error
+// instead of truncating.
 type Config struct {
 	Backend Backend
 	BaseURL string
 	APIKey  string
 	Model   string
+	Strict  bool
 }
 
 // New constructs an Embedder from cfg. Returns an error if any required
@@ -40,9 +46,13 @@ func New(cfg Config) (Embedder, error) {
 
 	switch cfg.Backend {
 	case BackendOllama:
-		return NewOllamaEmbedder(cfg.BaseURL, cfg.Model), nil
+		e := NewOllamaEmbedder(cfg.BaseURL, cfg.Model)
+		e.strict = cfg.Strict
+		return e, nil
 	case BackendOpenAI:
-		return NewOpenAIEmbedder(cfg.BaseURL, cfg.APIKey, cfg.Model), nil
+		e := NewOpenAIEmbedder(cfg.BaseURL, cfg.APIKey, cfg.Model)
+		e.strict = cfg.Strict
+		return e, nil
 	default:
 		return nil, fmt.Errorf("embedding: unknown backend %q", cfg.Backend)
 	}

@@ -16,6 +16,7 @@ type OllamaEmbedder struct {
 	model   string
 	client  *http.Client
 	dim     atomic.Int32
+	strict  bool
 }
 
 // NewOllamaEmbedder creates an embedder that calls the Ollama /api/embed endpoint.
@@ -41,6 +42,11 @@ type ollamaEmbedResponse struct {
 
 // Embed generates vector embeddings for the given texts via the Ollama API.
 func (e *OllamaEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	texts, err := applyLimits(texts, e.model, e.strict)
+	if err != nil {
+		return nil, err
+	}
+
 	reqBody := ollamaEmbedRequest{
 		Model: e.model,
 		Input: texts,
