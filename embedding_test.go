@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -136,6 +137,24 @@ func TestOllamaEmbedder_Model(t *testing.T) {
 	embedder := NewOllamaEmbedder("http://localhost:11434", "embeddinggemma")
 	if embedder.Model() != "embeddinggemma" {
 		t.Errorf("Model(): got %s, want embeddinggemma", embedder.Model())
+	}
+}
+
+func TestOllamaEmbedder_BaseURLTrailingSlashTrimmed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// httptest serves both /api/embed and //api/embed; we confirm the
+		// path the request landed on doesn't have a leading double slash.
+		if strings.HasPrefix(r.URL.Path, "//") {
+			t.Errorf("path has leading double slash: %q", r.URL.Path)
+		}
+		resp := ollamaEmbedResponse{Embeddings: [][]float32{{0.1}}}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	embedder := NewOllamaEmbedder(server.URL+"/", "embeddinggemma")
+	if _, err := embedder.Embed(context.Background(), []string{"x"}); err != nil {
+		t.Fatalf("Embed: %v", err)
 	}
 }
 

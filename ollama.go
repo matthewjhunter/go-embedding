@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync/atomic"
 )
 
@@ -25,7 +26,7 @@ type OllamaEmbedder struct {
 // This constructor will be removed in v1.0.
 func NewOllamaEmbedder(baseURL, model string) *OllamaEmbedder {
 	return &OllamaEmbedder{
-		baseURL: baseURL,
+		baseURL: strings.TrimRight(baseURL, "/"),
 		model:   model,
 		client:  &http.Client{},
 	}
