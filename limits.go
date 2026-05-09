@@ -3,6 +3,7 @@ package embedding
 import (
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 )
 
@@ -17,24 +18,40 @@ type Limits struct {
 	MaxTokens int
 }
 
-// modelLimits is the package-level registry. Reads go through LookupLimits,
-// writes through RegisterLimits — both take modelLimitsMu so the registry
-// is safe to mutate at any time, not only at startup.
+// Registered byte budgets are deliberately conservative. A model with a
+// 2048-token context window typically accepts ~3 bytes/token of dense
+// English news (markup, URLs, and special tokens eat headroom faster than
+// the naive ~4 bytes/token estimate suggests). 6000 bytes ≈ 2000 tokens
+// with a small safety margin, which empirically avoids backend rejects
+// where 8000 bytes did not.
 var (
 	modelLimitsMu sync.RWMutex
 	modelLimits   = map[string]Limits{
-		"nomic-embed-text":    {MaxBytes: 8000, MaxTokens: 2000},
-		"nomic-embed-text-v2": {MaxBytes: 8000, MaxTokens: 2000},
-		"embeddinggemma":      {MaxBytes: 8000, MaxTokens: 2000},
+		"nomic-embed-text":    {MaxBytes: 6000, MaxTokens: 2000},
+		"nomic-embed-text-v2": {MaxBytes: 6000, MaxTokens: 2000},
+		"embeddinggemma":      {MaxBytes: 6000, MaxTokens: 2000},
 	}
 )
 
-// LookupLimits returns the registered limits for model, or a zero Limits if
-// the model is unknown. A zero Limits means no enforcement is applied.
+// LookupLimits returns the registered limits for model, or a zero Limits
+// if the model is unknown. A zero Limits means no enforcement is applied.
+//
+// If an exact match is not found and the model name carries a tag suffix
+// (e.g. "nomic-embed-text:latest", "nomic-embed-text:q4_0"), LookupLimits
+// retries with the bare model name. Limits describe an architectural
+// property — the model's context window — which is shared across tagged
+// variants of the same base model. Storage keys are NOT canonicalised
+// this way; vectors from different tags are not interchangeable.
 func LookupLimits(model string) Limits {
 	modelLimitsMu.RLock()
 	defer modelLimitsMu.RUnlock()
-	return modelLimits[model]
+	if l, ok := modelLimits[model]; ok {
+		return l
+	}
+	if i := strings.IndexByte(model, ':'); i > 0 {
+		return modelLimits[model[:i]]
+	}
+	return Limits{}
 }
 
 // RegisterLimits adds or overrides the limits for a model. Safe to call at

@@ -15,9 +15,9 @@ func TestLookupLimits_PreRegisteredModels(t *testing.T) {
 		model        string
 		wantMaxBytes int
 	}{
-		{"nomic-embed-text", 8000},
-		{"nomic-embed-text-v2", 8000},
-		{"embeddinggemma", 8000},
+		{"nomic-embed-text", 6000},
+		{"nomic-embed-text-v2", 6000},
+		{"embeddinggemma", 6000},
 	}
 	for _, tc := range cases {
 		t.Run(tc.model, func(t *testing.T) {
@@ -33,6 +33,49 @@ func TestLookupLimits_Unknown(t *testing.T) {
 	got := LookupLimits("entirely-fictional-model")
 	if got != (Limits{}) {
 		t.Errorf("unknown model: got %v, want zero Limits", got)
+	}
+}
+
+func TestLookupLimits_TagSuffixFallsBackToBase(t *testing.T) {
+	// Tagged variants ("nomic-embed-text:latest", ":q4_0", ":v1.5", ...) share
+	// the base model's architectural limits. The lookup should fall back to
+	// the bare name when no exact match is registered.
+	cases := []string{
+		"nomic-embed-text:latest",
+		"nomic-embed-text:q4_0",
+		"nomic-embed-text:v1.5",
+		"nomic-embed-text:fp16",
+	}
+	for _, model := range cases {
+		t.Run(model, func(t *testing.T) {
+			got := LookupLimits(model)
+			if got.MaxBytes != 6000 {
+				t.Errorf("MaxBytes for %s: got %d, want 6000 (via base-name fallback)", model, got.MaxBytes)
+			}
+		})
+	}
+}
+
+func TestLookupLimits_TagSuffixOnUnknownBase(t *testing.T) {
+	// Tag-stripping should not invent limits for an unregistered base model.
+	got := LookupLimits("entirely-fictional-model:latest")
+	if got != (Limits{}) {
+		t.Errorf("unknown base with tag: got %v, want zero Limits", got)
+	}
+}
+
+func TestLookupLimits_ExactMatchWinsOverTagFallback(t *testing.T) {
+	// If a tagged variant is explicitly registered with different limits, the
+	// exact match must win — base-name fallback only fires on miss.
+	const tagged = "nomic-embed-text:tiny"
+	t.Cleanup(func() { unregisterLimits(tagged) })
+	RegisterLimits(tagged, Limits{MaxBytes: 1000})
+	if got := LookupLimits(tagged); got.MaxBytes != 1000 {
+		t.Errorf("explicit tagged registration: got %d, want 1000", got.MaxBytes)
+	}
+	// Bare name still returns the registry value, not the tagged override.
+	if got := LookupLimits("nomic-embed-text"); got.MaxBytes != 6000 {
+		t.Errorf("bare name unaffected by tagged registration: got %d, want 6000", got.MaxBytes)
 	}
 }
 
@@ -91,8 +134,8 @@ func TestEmbed_TruncatesByDefault_Ollama(t *testing.T) {
 	if _, err := e.Embed(context.Background(), []string{overlength}); err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
-	if receivedLen != 8000 {
-		t.Errorf("server saw %d bytes, want 8000 (truncated)", receivedLen)
+	if receivedLen != 6000 {
+		t.Errorf("server saw %d bytes, want 6000 (truncated)", receivedLen)
 	}
 }
 
