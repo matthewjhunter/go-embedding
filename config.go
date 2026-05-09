@@ -24,6 +24,15 @@ const (
 // registered Limits. When false (default), oversize text is truncated to
 // the limit and a log line is emitted. When true, Embed returns an error
 // instead of truncating.
+//
+// Model is treated as an opaque storage key by callers that persist
+// embeddings. Do not canonicalise it (do not strip ":latest" or other
+// tags, do not lowercase). Two model names that differ by even a tag
+// suffix can produce incompatible vectors — a `:q4_0` quantization, a
+// `:v2` version bump, or a `:latest` that pinned to different artifacts
+// at different times all yield vector spaces that should not be merged.
+// Limit lookups (LookupLimits) DO fall back to the bare name because
+// limits are an architectural property; storage equivalence is not.
 type Config struct {
 	Backend Backend
 	BaseURL string
