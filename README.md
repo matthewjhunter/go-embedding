@@ -234,6 +234,30 @@ text = embedding.FormatRetrievalDocument(
 
 Register a custom title-aware prompter via `RegisterDocumentPrompter`.
 
+### Stripping non-semantic content
+
+`StripNonsemantic` removes URLs, HTML tags, markdown link/image syntax,
+and runs of whitespace from a body string. The intent is to fit more
+real prose into a model's context window — URLs and markup tokenize
+densely but contribute no semantic signal to a clustering or
+retrieval embedder.
+
+```go
+clean := embedding.StripNonsemantic(article.Content)
+text  := embedding.FormatRecordForTask(model, embedding.TaskClustering, fields, clean)
+```
+
+What's stripped (full table in the godoc): bare URLs, HTML tags,
+`![alt](url)` → `alt`, `[text](url)` → `text`, whitespace runs
+collapsed. Markdown emphasis markers (`*`, `_`) are preserved —
+they're 1-2 bytes each and removing them safely across `snake_case`
+identifiers is more error-prone than the savings justify.
+
+This is a lossy transform. Don't apply it to inputs where URLs or
+markup carry meaning (e.g. a search-indexed README). For RSS article
+bodies feeding a clustering or retrieval embedder, the loss is
+intentional.
+
 ## Batch helper
 
 `BatchEmbed` issues batch embed calls and falls back to one-by-one when
