@@ -29,7 +29,9 @@ type Embedder interface {
 const embedMaxRetries = 2
 
 // EmbedWithRetry calls e.Embed, retrying up to embedMaxRetries times on
-// failure. Returns immediately on context cancellation.
+// failure. It returns immediately on context cancellation, and on a permanent
+// failure (see IsRetryable) — retrying input the backend has already rejected
+// as malformed or too large only wastes round-trips.
 func EmbedWithRetry(ctx context.Context, e Embedder, texts []string) ([][]float32, error) {
 	var result [][]float32
 	var err error
@@ -37,6 +39,9 @@ func EmbedWithRetry(ctx context.Context, e Embedder, texts []string) ([][]float3
 		result, err = e.Embed(ctx, texts)
 		if err == nil {
 			return result, nil
+		}
+		if !IsRetryable(err) {
+			return nil, err // permanent; don't burn retries
 		}
 		if attempt < embedMaxRetries && ctx.Err() != nil {
 			break // caller gave up; don't burn retries

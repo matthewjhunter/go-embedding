@@ -90,10 +90,13 @@ func applyLimits(texts []string, model string, strict bool) ([]string, error) {
 			continue
 		}
 		if strict {
-			return nil, fmt.Errorf(
+			// Strict mode opts out of truncation, so this is a permanent
+			// failure for this input — but not TooLong-adaptive, since the
+			// caller explicitly does not want it shrunk.
+			return nil, &PermanentError{Err: fmt.Errorf(
 				"embedding: input %d exceeds %s MaxBytes (%d > %d)",
 				i, model, len(t), limits.MaxBytes,
-			)
+			)}
 		}
 		truncated := truncateToBytes(t, limits.MaxBytes)
 		log.Printf(

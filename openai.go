@@ -51,12 +51,23 @@ type openAIEmbedResponse struct {
 }
 
 // Embed generates vector embeddings for the given texts via the OpenAI API.
+// Oversize input is first truncated to the model's registered byte budget
+// (see limits.go), then, if the backend still rejects it as too long,
+// adaptively shrunk and retried (see embedShrinking).
 func (e *OpenAIEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	texts, err := applyLimits(texts, e.model, e.strict)
 	if err != nil {
 		return nil, err
 	}
+	return embedShrinking(texts, func(ts []string) ([][]float32, error) {
+		return e.send(ctx, ts)
+	})
+}
 
+// send performs one OpenAI /v1/embeddings request. A non-2xx response is
+// classified via classifyHTTPError so callers can distinguish permanent
+// (4xx, too-long) from transient (5xx) failures.
+func (e *OpenAIEmbedder) send(ctx context.Context, texts []string) ([][]float32, error) {
 	reqBody := openAIEmbedRequest{
 		Model: e.model,
 		Input: texts,
@@ -88,7 +99,9 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, texts []string) ([][]float32
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("openai embed: HTTP %d: %s", resp.StatusCode, body)
+		return nil, classifyHTTPError(
+			fmt.Errorf("openai embed: HTTP %d: %s", resp.StatusCode, body),
+			resp.StatusCode, body)
 	}
 
 	var embedResp openAIEmbedResponse
