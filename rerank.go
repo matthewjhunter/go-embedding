@@ -55,13 +55,18 @@ import (
 //     is a caller bug and surfaces (not unavailable), so a broken deploy is not
 //     mistaken for a healthy one with poor relevance.
 //
+// Env wiring is resolved: RerankConfigFromEnv / RerankConfigFromEnvPrefix read
+// the RERANK_* namespace, mirroring ConfigFromEnv over EMBEDDING_* but kept
+// separate (the reranker endpoint and model are chosen independently).
+//
 // Known-open questions, to resolve against real usage rather than in advance:
 //   - Score semantics: raw model logits are not comparable across models and
 //     are not bounded to [0,1]. Do callers need a normalized score, or is
 //     "higher is better, scale is model-specific" enough? Matters only for
 //     score fusion or thresholding; pure reordering does not need it.
-//   - Env wiring: a ConfigFromEnvPrefix analog (RerankConfigFromEnvPrefix) is
-//     intentionally deferred until the constructor shape settles.
+//   - Strict enforcement: client-side over-length truncation is deferred until
+//     reranker sequence budgets are registered; the serving stack truncates
+//     for now (see RerankConfig.Strict, JinaReranker).
 //
 // Backend protocol note: unlike embeddings (which standardized on the OpenAI
 // shape), there is NO OpenAI rerank endpoint. Reranking standardized on the
