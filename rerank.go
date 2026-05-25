@@ -15,20 +15,49 @@ import (
 // search module, possibly memstore recall) land and tell us what they
 // actually want.
 //
+// Several shape questions have been resolved against the needs of the first
+// consumer (a two-stage search function); the contracts they settled are now
+// stated on Rerank, RerankResult, and RerankConfig below:
+//   - Return shape: sorted by descending Score, each carrying its input Index.
+//     Aligned 1:1 with input order was rejected because topN > 0 returns fewer
+//     results than inputs, and the rerank backends return sorted-with-index
+//     natively; Index already gives callers full composability.
+//   - Call shape: Rerank takes a RerankRequest struct, not positional args, so
+//     optional knobs (TopN, Instruction) and future additions don't force a
+//     breaking signature change each time. This intentionally diverges from
+//     Embedder.Embed's positional args — Embed has one input; Rerank has
+//     several optional ones.
+//   - TopN cutoff: a RerankRequest field, not a Config field, because the
+//     cutoff is intrinsically per-query.
+//   - Instruction: an optional RerankRequest field for instruction-tuned
+//     rerankers (Qwen3-Reranker, mxbai-rerank-v2). Cross-encoders such as
+//     bge-reranker-v2-m3 ignore it. It is the natural-language task string, NOT
+//     a prompt template — the serving stack owns the model's template. How the
+//     string reaches the model is backend-specific (the Cohere/Jina wire
+//     protocol has no instruction field, so an implementation typically folds
+//     it into the query).
+//   - Over-length input: Strict on RerankConfig mirrors Config, choosing
+//     truncate (default) vs. error for query+document pairs exceeding the
+//     model's max sequence length.
+//   - Large candidate sets: Rerank accepts an arbitrarily long documents slice
+//     and fans out internally; callers need not pre-chunk.
+//
 // Known-open questions, to resolve against real usage rather than in advance:
-//   - Return shape: results sorted by score (as drafted) vs. aligned 1:1 with
-//     the input order. Sorted matches Cohere/Jina; aligned is more composable.
 //   - Score semantics: raw model logits are not comparable across models and
 //     are not bounded to [0,1]. Do callers need a normalized score, or is
-//     "higher is better, scale is model-specific" enough?
-//   - TopN: push the cutoff into the backend request (Cohere/Jina support it)
-//     vs. return all and let the caller slice. Drafted as a Config field; may
-//     belong on a per-call options arg instead.
-//   - Backends: rerank endpoints differ from embed endpoints and Ollama has no
-//     native rerank, so RerankBackend is deliberately a separate enum from
-//     Backend rather than a reuse of it.
+//     "higher is better, scale is model-specific" enough? Matters only for
+//     score fusion or thresholding; pure reordering does not need it.
 //   - Env wiring: a ConfigFromEnvPrefix analog (RerankConfigFromEnvPrefix) is
 //     intentionally deferred until the constructor shape settles.
+//
+// Backend protocol note: unlike embeddings (which standardized on the OpenAI
+// shape), there is NO OpenAI rerank endpoint. Reranking standardized on the
+// Cohere/Jina shape ({query, documents, top_n} -> {results:[{index,
+// relevance_score}]}), which llama.cpp, vLLM, Infinity, TEI (a near variant),
+// and the Cohere/Jina clouds all implement. Supporting that one shape is the
+// broad option. Note that Ollama and Lemonade expose NO rerank endpoint at all
+// — they are not rerank backends, so a card serving only Ollama cannot rerank
+// without also running one of the servers above.
 //
 // Unlike Embedder, Reranker has no Fingerprint. A reranker is stateless at the
 // corpus level: it produces a per-query score and persists nothing, so there
@@ -42,21 +71,23 @@ import (
 type RerankBackend string
 
 const (
-	// RerankBackendTEI dispatches to a Text Embeddings Inference rerank
-	// server (POST {BaseURL}/rerank). Also covers servers that copy its
-	// protocol.
-	RerankBackendTEI RerankBackend = "tei"
-	// RerankBackendJina dispatches to a Jina-style rerank endpoint
-	// (POST {BaseURL}/v1/rerank), which Cohere's API also closely matches.
+	// RerankBackendJina dispatches to a Cohere/Jina-style rerank endpoint
+	// (POST {BaseURL}/v1/rerank or /rerank), the de-facto standard rerank
+	// protocol. This is the broad backend: llama.cpp (--reranking), vLLM,
+	// Infinity, and the Cohere and Jina clouds all speak it. Prefer this
+	// unless a server needs the TEI variant.
 	RerankBackendJina RerankBackend = "jina"
+	// RerankBackendTEI dispatches to a Text Embeddings Inference rerank
+	// server (POST {BaseURL}/rerank). TEI's request/response differ enough
+	// from the Cohere/Jina shape to warrant a separate path.
+	RerankBackendTEI RerankBackend = "tei"
 )
 
-// RerankResult is one scored document from a Rerank call.
-//
-// Speculative: see the open question on return shape above. As drafted, a
-// Rerank call returns these sorted by descending Score, each carrying the
-// Index of the document in the slice originally passed to Rerank, so the
-// caller can map a result back to its source document.
+// RerankResult is one scored document from a Rerank call. A Rerank call
+// returns these sorted by descending Score, each carrying the Index of the
+// document in the slice originally passed to Rerank, so the caller can map a
+// result back to its source document. To recover input order, or to blend
+// Score with a first-stage score, index into the original slice by Index.
 type RerankResult struct {
 	// Index is the position of this document in the documents slice passed
 	// to Rerank.
@@ -74,15 +105,49 @@ type RerankResult struct {
 //
 // Speculative interface — see the banner at the top of this file.
 type Reranker interface {
-	// Rerank scores each document in documents against query and returns the
-	// results sorted by descending Score. The returned slice has one entry
-	// per input document (subject to the open TopN question above).
-	Rerank(ctx context.Context, query string, documents []string) ([]RerankResult, error)
+	// Rerank scores each document in req.Documents against req.Query and
+	// returns the results sorted by descending Score. See RerankRequest for
+	// the per-call options (TopN, Instruction) and their semantics.
+	//
+	// An empty Documents slice returns nil and no error, with no round-trip to
+	// the backend. Documents may be arbitrarily long: implementations fan out
+	// across multiple backend requests as needed and merge, so callers need
+	// not pre-chunk to a backend's per-request limit.
+	//
+	// A query+document pair exceeding the model's maximum sequence length is
+	// truncated by default; see RerankConfig.Strict to make that an error
+	// instead.
+	Rerank(ctx context.Context, req RerankRequest) ([]RerankResult, error)
 	// Model returns a stable identifier for the rerank model (e.g.
 	// "bge-reranker-v2-m3"). It need not — and generally will not — match the
 	// embedding model used for first-stage retrieval; rerankers and embedders
 	// are chosen independently and share no vector space.
 	Model() string
+}
+
+// RerankRequest is a single Rerank call. Query and Documents are required;
+// TopN and Instruction are optional. It is a struct rather than positional
+// arguments so that new optional fields can be added without breaking the
+// Reranker interface.
+type RerankRequest struct {
+	// Query is the search query the documents are scored against.
+	Query string
+	// Documents is the candidate shortlist to rescore — for hybrid search,
+	// the merged-and-deduped union of the first-stage (vector + full-text)
+	// results. Each RerankResult.Index refers back into this slice.
+	Documents []string
+	// TopN, if > 0, limits the result to the TopN highest-scoring documents.
+	// TopN <= 0 returns a result for every document. Either way each result's
+	// Index refers to the document's position in Documents.
+	TopN int
+	// Instruction is an optional natural-language task description for
+	// instruction-tuned rerankers (e.g. Qwen3-Reranker, mxbai-rerank-v2),
+	// such as "Given a support question, rank the most relevant docs". Plain
+	// cross-encoders (e.g. bge-reranker-v2-m3) ignore it. It is NOT a prompt
+	// template: the serving stack owns the model's template, and the backend
+	// decides how the string reaches the model (the Cohere/Jina wire protocol
+	// has no instruction field, so it is typically folded into the query).
+	Instruction string
 }
 
 // RerankConfig configures a new Reranker. It mirrors Config (the embedder
@@ -91,17 +156,16 @@ type Reranker interface {
 //
 // Backend, BaseURL, and Model are required. APIKey is optional and only
 // meaningful for backends that authenticate.
-//
-// Speculative — TopN in particular may move to a per-call argument.
 type RerankConfig struct {
 	Backend RerankBackend
 	BaseURL string
 	APIKey  string
 	Model   string
-	// TopN, if > 0, asks the backend to return only its top N results.
-	// Zero means return a score for every document. Speculative: see the
-	// TopN open question above.
-	TopN int
+	// Strict controls how the reranker reacts to a query+document pair that
+	// exceeds the model's maximum sequence length. When false (default), the
+	// over-length pair is truncated to fit. When true, Rerank returns an error
+	// instead of scoring a truncated pair. Mirrors Config.Strict.
+	Strict bool
 }
 
 // NewReranker constructs a Reranker from cfg. Returns an error if any required
@@ -123,9 +187,9 @@ func NewReranker(cfg RerankConfig) (Reranker, error) {
 	}
 
 	switch cfg.Backend {
-	case RerankBackendTEI:
-		return nil, fmt.Errorf("embedding: rerank backend %q not yet implemented", cfg.Backend)
 	case RerankBackendJina:
+		return nil, fmt.Errorf("embedding: rerank backend %q not yet implemented", cfg.Backend)
+	case RerankBackendTEI:
 		return nil, fmt.Errorf("embedding: rerank backend %q not yet implemented", cfg.Backend)
 	default:
 		return nil, fmt.Errorf("embedding: unknown rerank backend %q", cfg.Backend)
