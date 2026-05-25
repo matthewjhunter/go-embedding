@@ -180,21 +180,25 @@ type RerankConfig struct {
 	BaseURL string
 	APIKey  string
 	Model   string
-	// Strict controls how the reranker reacts to a query+document pair that
-	// exceeds the model's maximum sequence length. When false (default), the
-	// over-length pair is truncated to fit. When true, Rerank returns an error
-	// instead of scoring a truncated pair. Mirrors Config.Strict.
+	// Strict is intended to control how the reranker reacts to a query+document
+	// pair that exceeds the model's maximum sequence length: truncate when
+	// false (default), error when true, mirroring Config.Strict.
+	//
+	// Not yet enforced: the Jina backend leaves truncation to the serving
+	// stack because reranker sequence budgets are not registered in limits.go
+	// and the Cohere/Jina wire protocol reports no truncation. The field is
+	// reserved so enabling client-side enforcement later is not a breaking
+	// change. Keep rerank shortlists chunked upstream until then.
 	Strict bool
 }
 
 // NewReranker constructs a Reranker from cfg. Returns an error if any required
 // field is missing or if Backend is not recognised.
 //
-// Speculative: no backend is implemented yet. The cases below document the
-// intended dispatch; each currently returns a not-implemented error so the
-// interface can be designed against before the HTTP plumbing is written. The
-// real implementations should reuse the existing backend machinery
-// (classifyHTTPError, the retry/limits helpers) rather than duplicating it.
+// RerankBackendJina is implemented (see JinaReranker); RerankBackendTEI is not
+// yet, since one Cohere/Jina implementation already covers the broadest set of
+// servers. cfg.Strict is carried on RerankConfig but not yet enforced by the
+// Jina backend — see JinaReranker.
 func NewReranker(cfg RerankConfig) (Reranker, error) {
 	switch {
 	case cfg.Backend == "":
@@ -207,7 +211,7 @@ func NewReranker(cfg RerankConfig) (Reranker, error) {
 
 	switch cfg.Backend {
 	case RerankBackendJina:
-		return nil, fmt.Errorf("embedding: rerank backend %q not yet implemented", cfg.Backend)
+		return NewJinaReranker(cfg.BaseURL, cfg.APIKey, cfg.Model), nil
 	case RerankBackendTEI:
 		return nil, fmt.Errorf("embedding: rerank backend %q not yet implemented", cfg.Backend)
 	default:
