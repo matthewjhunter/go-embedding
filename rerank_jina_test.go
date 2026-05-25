@@ -189,8 +189,8 @@ func TestJinaRerankServerErrors(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected an error")
 			}
-			if IsRerankUnavailable(err) != tt.wantUnavail {
-				t.Errorf("IsRerankUnavailable = %v, want %v (err: %v)", IsRerankUnavailable(err), tt.wantUnavail, err)
+			if gotUnavail := !IsRerankAvailable(err); gotUnavail != tt.wantUnavail {
+				t.Errorf("!IsRerankAvailable = %v, want %v (err: %v)", gotUnavail, tt.wantUnavail, err)
 			}
 			var pe *PermanentError
 			if errors.As(err, &pe) != tt.wantPerm {
@@ -212,7 +212,7 @@ func TestJinaRerankTransportFailureIsUnavailable(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error")
 	}
-	if !IsRerankUnavailable(err) {
+	if IsRerankAvailable(err) {
 		t.Errorf("a refused connection should be unavailable, got %v", err)
 	}
 }
@@ -230,7 +230,7 @@ func TestJinaRerankRejectsOutOfRangeIndex(t *testing.T) {
 		t.Fatal("expected an error for out-of-range index")
 	}
 	// A malformed server response is a real error, not a degrade signal.
-	if IsRerankUnavailable(err) {
+	if !IsRerankAvailable(err) {
 		t.Errorf("out-of-range index should not be unavailable, got %v", err)
 	}
 }

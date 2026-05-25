@@ -48,7 +48,7 @@ import (
 //     when the backend is down — that would fabricate scores and hide outages.
 //     Rerank returns a real error; an availability failure (refused/timed-out
 //     connection, HTTP 5xx, HTTP 429, a per-call deadline) wraps
-//     ErrRerankUnavailable, recognised by IsRerankUnavailable. The consumer
+//     ErrRerankUnavailable, for which IsRerankAvailable reports false. The consumer
 //     owns the fallback (only it holds the first-stage order and scores) and,
 //     on an unavailable error, keeps that first-stage order — collapsing into
 //     the same path it uses when no Reranker is configured. A 4xx request error
@@ -138,9 +138,9 @@ type Reranker interface {
 	//
 	// When the backend is unavailable (connection refused or timed out, HTTP
 	// 5xx or 429, or ctx's deadline elapsed), Rerank returns an error for which
-	// IsRerankUnavailable reports true; the caller should degrade to its
+	// IsRerankAvailable reports false; the caller should degrade to its
 	// first-stage ordering rather than fail the query. Other errors — notably a
-	// 4xx request error — are not unavailable and should surface.
+	// 4xx request error — leave IsRerankAvailable true and should surface.
 	Rerank(ctx context.Context, req RerankRequest) ([]RerankResult, error)
 	// Model returns a stable identifier for the rerank model (e.g.
 	// "bge-reranker-v2-m3"). It need not — and generally will not — match the
@@ -228,37 +228,42 @@ func NewReranker(cfg RerankConfig) (Reranker, error) {
 // unreachable or unhealthy — a refused or timed-out connection, an HTTP 5xx, or
 // an HTTP 429 — rather than by a malformed request. It is the signal a consumer
 // uses to degrade gracefully: when Rerank fails with an error for which
-// IsRerankUnavailable reports true, the consumer keeps its first-stage (e.g.
+// IsRerankAvailable reports false, the consumer keeps its first-stage (e.g.
 // RRF-fused) ordering instead of failing the query. Errors that do not wrap it
 // (notably a 4xx request error, surfaced as a *PermanentError) are caller bugs
 // and must surface rather than silently degrade.
 //
 // A backend wraps it at two sites: transport failures from the HTTP round trip
 // (use fmt.Errorf("%w: %w", ErrRerankUnavailable, err) so a refused connection
-// — which is not a timeout and so not caught by IsRerankUnavailable on its own
+// — which is not a timeout and so not flagged by IsRerankAvailable on its own
 // — is recognised), and 429/5xx responses via classifyRerankHTTPError.
 var ErrRerankUnavailable = errors.New("embedding: rerank backend unavailable")
 
-// IsRerankUnavailable reports whether err indicates the rerank backend was
-// unavailable, so the caller should degrade to first-stage ordering instead of
-// failing the query. It is true for errors wrapping ErrRerankUnavailable and
-// for the transport-level failures a backend may surface unwrapped: a per-call
-// deadline (context.DeadlineExceeded) or any net.Error reporting a timeout. A
-// 4xx request error (a *PermanentError) is not unavailable — that is a caller
-// bug and must surface. context.Canceled is likewise not unavailable: a
-// cancelled call was abandoned by the caller, not failed by the backend.
-func IsRerankUnavailable(err error) bool {
+// IsRerankAvailable reports whether err indicates the rerank backend was
+// reachable and healthy. It is the predicate a consumer inverts to decide
+// between surfacing and degrading: when Rerank fails with an error for which
+// IsRerankAvailable reports false, the caller should degrade to first-stage
+// ordering instead of failing the query.
+//
+// It returns false for errors wrapping ErrRerankUnavailable and for the
+// transport-level failures a backend may surface unwrapped: a per-call deadline
+// (context.DeadlineExceeded) or any net.Error reporting a timeout. It returns
+// true otherwise, including for: a nil error (the call succeeded); a 4xx request
+// error (a *PermanentError — the backend was reached, the request was malformed,
+// a caller bug that must surface, not an outage); and context.Canceled (the
+// caller abandoned the call, so nothing indicates the backend is down).
+func IsRerankAvailable(err error) bool {
 	if err == nil {
-		return false
+		return true
 	}
 	if errors.Is(err, ErrRerankUnavailable) {
-		return true
+		return false
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return true
+		return false
 	}
 	var ne net.Error
-	return errors.As(err, &ne) && ne.Timeout()
+	return !errors.As(err, &ne) || !ne.Timeout()
 }
 
 // classifyRerankHTTPError classifies a non-2xx rerank response. A 429 or 5xx

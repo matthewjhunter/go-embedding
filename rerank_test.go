@@ -39,7 +39,7 @@ func TestClassifyRerankHTTPError(t *testing.T) {
 		name          string
 		status        int
 		body          string
-		wantUnavail   bool // IsRerankUnavailable should report this
+		wantUnavail   bool // IsRerankAvailable should report the inverse
 		wantPermanent bool // result should be a *PermanentError
 		wantTooLong   bool // PermanentError.TooLong, when permanent
 	}{
@@ -68,8 +68,8 @@ func TestClassifyRerankHTTPError(t *testing.T) {
 				t.Fatal("classifyRerankHTTPError returned nil for a non-2xx status")
 			}
 
-			if gotUnavail := IsRerankUnavailable(got); gotUnavail != tt.wantUnavail {
-				t.Errorf("IsRerankUnavailable = %v, want %v", gotUnavail, tt.wantUnavail)
+			if gotUnavail := !IsRerankAvailable(got); gotUnavail != tt.wantUnavail {
+				t.Errorf("!IsRerankAvailable = %v, want %v", gotUnavail, tt.wantUnavail)
 			}
 
 			var pe *PermanentError
@@ -83,68 +83,69 @@ func TestClassifyRerankHTTPError(t *testing.T) {
 
 			// A permanent (request) error must never look unavailable: silently
 			// degrading on a caller bug is exactly what we want to avoid.
-			if tt.wantPermanent && IsRerankUnavailable(got) {
+			if tt.wantPermanent && !IsRerankAvailable(got) {
 				t.Error("a PermanentError must not report as unavailable")
 			}
 		})
 	}
 }
 
-func TestIsRerankUnavailable(t *testing.T) {
+func TestIsRerankAvailable(t *testing.T) {
 	t.Parallel()
 
+	// want is the availability verdict: false means "degrade to first stage".
 	tests := []struct {
 		name string
 		err  error
 		want bool
 	}{
-		{name: "nil", err: nil, want: false},
-		{name: "sentinel", err: ErrRerankUnavailable, want: true},
+		{name: "nil", err: nil, want: true},
+		{name: "sentinel", err: ErrRerankUnavailable, want: false},
 		{
 			name: "wrapped sentinel",
 			err:  fmt.Errorf("rerank: %w", ErrRerankUnavailable),
-			want: true,
+			want: false,
 		},
 		{
 			name: "double-wrapped sentinel",
 			err:  fmt.Errorf("%w: %w", ErrRerankUnavailable, errors.New("HTTP 503")),
-			want: true,
+			want: false,
 		},
-		{name: "context deadline", err: context.DeadlineExceeded, want: true},
+		{name: "context deadline", err: context.DeadlineExceeded, want: false},
 		{
 			name: "wrapped context deadline",
 			err:  fmt.Errorf("rerank: %w", context.DeadlineExceeded),
-			want: true,
+			want: false,
 		},
-		{name: "net timeout", err: fakeTimeoutErr{}, want: true},
-		{name: "net non-timeout", err: fakeNetErr{}, want: false},
-		{name: "plain error", err: errors.New("boom"), want: false},
-		{name: "context canceled", err: context.Canceled, want: false},
+		{name: "net timeout", err: fakeTimeoutErr{}, want: false},
+		{name: "net non-timeout", err: fakeNetErr{}, want: true},
+		{name: "plain error", err: errors.New("boom"), want: true},
+		{name: "context canceled", err: context.Canceled, want: true},
 		{
 			name: "permanent error",
 			err:  &PermanentError{Err: errors.New("HTTP 400")},
-			want: false,
+			want: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := IsRerankUnavailable(tt.err); got != tt.want {
-				t.Errorf("IsRerankUnavailable(%v) = %v, want %v", tt.err, got, tt.want)
+			if got := IsRerankAvailable(tt.err); got != tt.want {
+				t.Errorf("IsRerankAvailable(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
 	}
 }
 
 // Guard the contract that a sub-deadline trips degradation: a context that has
-// already expired, surfaced unwrapped, is unavailable.
-func TestIsRerankUnavailableExpiredContext(t *testing.T) {
+// already expired, surfaced unwrapped, reports unavailable (false).
+func TestIsRerankAvailableExpiredContext(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
 	defer cancel()
 	<-ctx.Done()
-	if !IsRerankUnavailable(ctx.Err()) {
+	if IsRerankAvailable(ctx.Err()) {
 		t.Errorf("expired context error should be unavailable, got err=%v", ctx.Err())
 	}
 }
