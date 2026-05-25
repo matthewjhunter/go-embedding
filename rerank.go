@@ -59,11 +59,21 @@ import (
 // the RERANK_* namespace, mirroring ConfigFromEnv over EMBEDDING_* but kept
 // separate (the reranker endpoint and model are chosen independently).
 //
+// Score normalization is resolved for now: the library does NOT normalize.
+// Scores pass through raw because their scale depends on the serving stack as
+// much as the model (Cohere/Jina/TEI return [0,1]; llama.cpp returns raw
+// logits), and the wire protocol carries no flag distinguishing the two — so a
+// default sigmoid would double-normalize the already-bounded backends, and
+// min-max would destroy the absolute signal a relevance floor needs. The
+// current search consumer uses the score for ordering only (RRF selects, the
+// reranker reorders), which needs no common scale. Thresholding, when wanted,
+// is the consumer's policy: an operator-calibrated floor, per deployment, not a
+// portable constant (see RerankResult.Score). An opt-in, operator-declared
+// sigmoid (RerankConfig.NormalizeScores) is held in reserve for the day a
+// consumer fuses rerank score with a first-stage score, or wants a bounded
+// scale to calibrate against — order-preserving, so it never changes ranking.
+//
 // Known-open questions, to resolve against real usage rather than in advance:
-//   - Score semantics: raw model logits are not comparable across models and
-//     are not bounded to [0,1]. Do callers need a normalized score, or is
-//     "higher is better, scale is model-specific" enough? Matters only for
-//     score fusion or thresholding; pure reordering does not need it.
 //   - Strict enforcement: client-side over-length truncation is deferred until
 //     reranker sequence budgets are registered; the serving stack truncates
 //     for now (see RerankConfig.Strict, JinaReranker).
@@ -111,8 +121,18 @@ type RerankResult struct {
 	// to Rerank.
 	Index int
 	// Score is the model's relevance score for (query, document). Higher is
-	// more relevant. The scale is model-specific: scores are not bounded to
-	// a fixed range and are not comparable across different rerank models.
+	// more relevant, so sorting by descending Score is always meaningful.
+	//
+	// The scale, however, is not: it depends on both the model AND the serving
+	// stack. The same model returns a sigmoid-bounded [0,1] score on one server
+	// (Cohere/Jina, TEI by default) and an unbounded raw logit on another
+	// (llama.cpp --reranking), and the wire protocol carries no flag saying
+	// which. So Score is comparable WITHIN one Rerank call but not across
+	// models or backends. A consumer applying a relevance floor (threshold)
+	// must therefore calibrate it per deployment and treat it as operator
+	// config — do NOT hardcode a portable cutoff. Pure reordering needs none of
+	// this; only thresholding or score fusion does. See the banner's score-
+	// semantics note for why the library does not normalize by default.
 	Score float64
 }
 
