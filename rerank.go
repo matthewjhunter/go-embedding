@@ -2,7 +2,10 @@ package embedding
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
+	"net/http"
 )
 
 // =============================================================================
@@ -41,6 +44,16 @@ import (
 //     model's max sequence length.
 //   - Large candidate sets: Rerank accepts an arbitrarily long documents slice
 //     and fans out internally; callers need not pre-chunk.
+//   - Graceful degradation: the library does NOT silently fake a passthrough
+//     when the backend is down — that would fabricate scores and hide outages.
+//     Rerank returns a real error; an availability failure (refused/timed-out
+//     connection, HTTP 5xx, HTTP 429, a per-call deadline) wraps
+//     ErrRerankUnavailable, recognised by IsRerankUnavailable. The consumer
+//     owns the fallback (only it holds the first-stage order and scores) and,
+//     on an unavailable error, keeps that first-stage order — collapsing into
+//     the same path it uses when no Reranker is configured. A 4xx request error
+//     is a caller bug and surfaces (not unavailable), so a broken deploy is not
+//     mistaken for a healthy one with poor relevance.
 //
 // Known-open questions, to resolve against real usage rather than in advance:
 //   - Score semantics: raw model logits are not comparable across models and
@@ -117,6 +130,12 @@ type Reranker interface {
 	// A query+document pair exceeding the model's maximum sequence length is
 	// truncated by default; see RerankConfig.Strict to make that an error
 	// instead.
+	//
+	// When the backend is unavailable (connection refused or timed out, HTTP
+	// 5xx or 429, or ctx's deadline elapsed), Rerank returns an error for which
+	// IsRerankUnavailable reports true; the caller should degrade to its
+	// first-stage ordering rather than fail the query. Other errors — notably a
+	// 4xx request error — are not unavailable and should surface.
 	Rerank(ctx context.Context, req RerankRequest) ([]RerankResult, error)
 	// Model returns a stable identifier for the rerank model (e.g.
 	// "bge-reranker-v2-m3"). It need not — and generally will not — match the
@@ -194,4 +213,59 @@ func NewReranker(cfg RerankConfig) (Reranker, error) {
 	default:
 		return nil, fmt.Errorf("embedding: unknown rerank backend %q", cfg.Backend)
 	}
+}
+
+// ErrRerankUnavailable marks a rerank failure caused by the backend being
+// unreachable or unhealthy — a refused or timed-out connection, an HTTP 5xx, or
+// an HTTP 429 — rather than by a malformed request. It is the signal a consumer
+// uses to degrade gracefully: when Rerank fails with an error for which
+// IsRerankUnavailable reports true, the consumer keeps its first-stage (e.g.
+// RRF-fused) ordering instead of failing the query. Errors that do not wrap it
+// (notably a 4xx request error, surfaced as a *PermanentError) are caller bugs
+// and must surface rather than silently degrade.
+//
+// A backend wraps it at two sites: transport failures from the HTTP round trip
+// (use fmt.Errorf("%w: %w", ErrRerankUnavailable, err) so a refused connection
+// — which is not a timeout and so not caught by IsRerankUnavailable on its own
+// — is recognised), and 429/5xx responses via classifyRerankHTTPError.
+var ErrRerankUnavailable = errors.New("embedding: rerank backend unavailable")
+
+// IsRerankUnavailable reports whether err indicates the rerank backend was
+// unavailable, so the caller should degrade to first-stage ordering instead of
+// failing the query. It is true for errors wrapping ErrRerankUnavailable and
+// for the transport-level failures a backend may surface unwrapped: a per-call
+// deadline (context.DeadlineExceeded) or any net.Error reporting a timeout. A
+// 4xx request error (a *PermanentError) is not unavailable — that is a caller
+// bug and must surface. context.Canceled is likewise not unavailable: a
+// cancelled call was abandoned by the caller, not failed by the backend.
+func IsRerankUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrRerankUnavailable) {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
+// classifyRerankHTTPError classifies a non-2xx rerank response. A 429 or 5xx
+// means the backend is reachable but unhealthy and wraps ErrRerankUnavailable
+// so the consumer can degrade to first-stage ordering. A 4xx is the caller's
+// problem (bad request, unknown model, auth, oversize pair) and surfaces as a
+// *PermanentError, with TooLong set when the body indicates the query+document
+// pair exceeded the model's max sequence length. It mirrors classifyHTTPError;
+// the 429 split is rerank-specific — backpressure from a rerank sidecar is an
+// availability signal to retry/degrade on, not a permanent rejection.
+func classifyRerankHTTPError(err error, status int, body []byte) error {
+	switch {
+	case status == http.StatusTooManyRequests, status >= 500:
+		return fmt.Errorf("%w: %w", ErrRerankUnavailable, err)
+	case status >= 400:
+		return &PermanentError{Err: err, TooLong: isContextLengthError(status, body)}
+	}
+	return err
 }
