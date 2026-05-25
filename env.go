@@ -86,16 +86,23 @@ func ConfigFromEnvPrefix(prefix string) (Config, error) {
 // prefix already equals DefaultEnvPrefix only one lookup is performed. Empty
 // strings are treated as unset.
 func envCascade(prefix, suffix string) (value, source string) {
+	return envCascadeTo(prefix, DefaultEnvPrefix, suffix)
+}
+
+// envCascadeTo is envCascade with a caller-supplied canonical fallback prefix,
+// so namespaces other than EMBEDDING (e.g. RERANK) can share the same lookup
+// logic. It checks prefix+suffix, then canonical+suffix.
+func envCascadeTo(prefix, canonical, suffix string) (value, source string) {
 	key := prefix + suffix
 	if v := os.Getenv(key); v != "" {
 		return v, key
 	}
-	if prefix == DefaultEnvPrefix {
+	if prefix == canonical {
 		return "", ""
 	}
-	canonical := DefaultEnvPrefix + suffix
-	if v := os.Getenv(canonical); v != "" {
-		return v, canonical
+	ckey := canonical + suffix
+	if v := os.Getenv(ckey); v != "" {
+		return v, ckey
 	}
 	return "", ""
 }
