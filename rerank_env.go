@@ -13,7 +13,7 @@ import (
 const DefaultRerankEnvPrefix = "RERANK"
 
 // RerankConfigFromEnv reads RerankConfig from RERANK_BACKEND, RERANK_BASE_URL,
-// RERANK_API_KEY, RERANK_MODEL, and RERANK_STRICT.
+// RERANK_API_KEY, RERANK_MODEL, RERANK_STRICT, and RERANK_NORMALIZE_SCORES.
 //
 // Backend defaults to the Cohere/Jina shape (RerankBackendJina). Unlike
 // embeddings there is no ecosystem default endpoint or model — those are
@@ -66,6 +66,16 @@ func RerankConfigFromEnvPrefix(prefix string) (RerankConfig, error) {
 			)
 		}
 		cfg.Strict = b
+	}
+	if v, src := envCascadeTo(prefix, DefaultRerankEnvPrefix, envSuffixNormalizeScores); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return RerankConfig{}, fmt.Errorf(
+				"embedding: invalid %s value %q: %w",
+				src, v, err,
+			)
+		}
+		cfg.NormalizeScores = b
 	}
 	return cfg, nil
 }

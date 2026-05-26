@@ -11,6 +11,7 @@ func clearRerankEnv(t *testing.T) {
 	t.Helper()
 	for _, suffix := range []string{
 		envSuffixBackend, envSuffixBaseURL, envSuffixAPIKey, envSuffixModel, envSuffixStrict,
+		envSuffixNormalizeScores,
 	} {
 		t.Setenv(DefaultRerankEnvPrefix+suffix, "")
 	}
@@ -35,17 +36,19 @@ func TestRerankConfigFromEnv_OverridesAllFields(t *testing.T) {
 	t.Setenv("RERANK_API_KEY", "rk-test")
 	t.Setenv("RERANK_MODEL", "bge-reranker-v2-m3")
 	t.Setenv("RERANK_STRICT", "true")
+	t.Setenv("RERANK_NORMALIZE_SCORES", "true")
 
 	cfg, err := RerankConfigFromEnv()
 	if err != nil {
 		t.Fatalf("RerankConfigFromEnv: %v", err)
 	}
 	want := RerankConfig{
-		Backend: RerankBackendTEI,
-		BaseURL: "http://cube:8080",
-		APIKey:  "rk-test",
-		Model:   "bge-reranker-v2-m3",
-		Strict:  true,
+		Backend:         RerankBackendTEI,
+		BaseURL:         "http://cube:8080",
+		APIKey:          "rk-test",
+		Model:           "bge-reranker-v2-m3",
+		Strict:          true,
+		NormalizeScores: true,
 	}
 	if cfg != want {
 		t.Errorf("got %+v, want %+v", cfg, want)
@@ -113,5 +116,18 @@ func TestRerankConfigFromEnv_InvalidStrict(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "RERANK_STRICT") {
 		t.Errorf("error = %v, want it to name RERANK_STRICT", err)
+	}
+}
+
+func TestRerankConfigFromEnv_InvalidNormalizeScores(t *testing.T) {
+	clearRerankEnv(t)
+	t.Setenv("RERANK_NORMALIZE_SCORES", "maybe")
+
+	_, err := RerankConfigFromEnv()
+	if err == nil {
+		t.Fatal("expected an error for malformed bool")
+	}
+	if !strings.Contains(err.Error(), "RERANK_NORMALIZE_SCORES") {
+		t.Errorf("error = %v, want it to name RERANK_NORMALIZE_SCORES", err)
 	}
 }

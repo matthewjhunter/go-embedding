@@ -30,6 +30,82 @@ var (
 	_ net.Error = fakeNetErr{}
 )
 
+// stubReranker is a Reranker that returns canned results, for exercising
+// wrappers (e.g. normalizingReranker) without a backend.
+type stubReranker struct {
+	results []RerankResult
+	err     error
+	model   string
+}
+
+func (s stubReranker) Rerank(context.Context, RerankRequest) ([]RerankResult, error) {
+	return s.results, s.err
+}
+func (s stubReranker) Model() string { return s.model }
+
+var _ Reranker = stubReranker{}
+
+func TestNormalizingRerankerAppliesSigmoid(t *testing.T) {
+	t.Parallel()
+	// Raw logits as llama.cpp --reranking returns them (measured against the
+	// bge-reranker-v2-m3 sidecar): unbounded, already sorted descending.
+	inner := stubReranker{
+		model: "bge-reranker-v2-m3",
+		results: []RerankResult{
+			{Index: 0, Score: 1.7297048568725586},
+			{Index: 2, Score: -2.306173801422119},
+			{Index: 3, Score: -11.033184051513672},
+		},
+	}
+	nr := normalizingReranker{inner: inner}
+
+	got, err := nr.Rerank(context.Background(), RerankRequest{Query: "q", Documents: []string{"a", "b", "c"}})
+	if err != nil {
+		t.Fatalf("Rerank: %v", err)
+	}
+
+	for i, r := range got {
+		if r.Score <= 0 || r.Score >= 1 {
+			t.Errorf("result[%d].Score = %v, want in (0,1)", i, r.Score)
+		}
+	}
+	// Sigmoid is monotonic, so index order and descending order must survive.
+	wantIdx := []int{0, 2, 3}
+	for i, w := range wantIdx {
+		if got[i].Index != w {
+			t.Errorf("result[%d].Index = %d, want %d (order must be preserved)", i, got[i].Index, w)
+		}
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i-1].Score < got[i].Score {
+			t.Errorf("results not descending at %d: %v < %v", i, got[i-1].Score, got[i].Score)
+		}
+	}
+	// Spot-check the transform: sigmoid(1.7297...) ≈ 0.8494.
+	if d := got[0].Score - 0.8494; d > 1e-3 || d < -1e-3 {
+		t.Errorf("sigmoid(top logit) = %v, want ≈0.8494", got[0].Score)
+	}
+}
+
+func TestNormalizingRerankerPropagatesError(t *testing.T) {
+	t.Parallel()
+	sentinel := errors.New("boom")
+	nr := normalizingReranker{inner: stubReranker{err: sentinel}}
+
+	_, err := nr.Rerank(context.Background(), RerankRequest{Documents: []string{"a"}})
+	if !errors.Is(err, sentinel) {
+		t.Errorf("err = %v, want sentinel error", err)
+	}
+}
+
+func TestNormalizingRerankerModelPassthrough(t *testing.T) {
+	t.Parallel()
+	nr := normalizingReranker{inner: stubReranker{model: "bge-reranker-v2-m3"}}
+	if nr.Model() != "bge-reranker-v2-m3" {
+		t.Errorf("Model() = %q, want bge-reranker-v2-m3", nr.Model())
+	}
+}
+
 func TestClassifyRerankHTTPError(t *testing.T) {
 	t.Parallel()
 

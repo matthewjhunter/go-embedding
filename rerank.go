@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 )
@@ -59,19 +60,24 @@ import (
 // the RERANK_* namespace, mirroring ConfigFromEnv over EMBEDDING_* but kept
 // separate (the reranker endpoint and model are chosen independently).
 //
-// Score normalization is resolved for now: the library does NOT normalize.
-// Scores pass through raw because their scale depends on the serving stack as
-// much as the model (Cohere/Jina/TEI return [0,1]; llama.cpp returns raw
-// logits), and the wire protocol carries no flag distinguishing the two — so a
-// default sigmoid would double-normalize the already-bounded backends, and
-// min-max would destroy the absolute signal a relevance floor needs. The
-// current search consumer uses the score for ordering only (RRF selects, the
-// reranker reorders), which needs no common scale. Thresholding, when wanted,
-// is the consumer's policy: an operator-calibrated floor, per deployment, not a
-// portable constant (see RerankResult.Score). An opt-in, operator-declared
-// sigmoid (RerankConfig.NormalizeScores) is held in reserve for the day a
-// consumer fuses rerank score with a first-stage score, or wants a bounded
-// scale to calibrate against — order-preserving, so it never changes ranking.
+// Score normalization is OFF by default but available as an opt-in. Scores
+// pass through raw unless RerankConfig.NormalizeScores is set, because their
+// scale depends on the serving stack as much as the model (Cohere/Jina/TEI
+// return [0,1]; llama.cpp returns raw logits), and the wire protocol carries no
+// flag distinguishing the two — so a default sigmoid would double-normalize the
+// already-bounded backends, and min-max would destroy the absolute signal a
+// relevance floor needs. The bit the wire cannot supply is operator-declared:
+// a consumer running a raw-logit stack (e.g. llama.cpp --reranking) sets
+// NormalizeScores, and the library applies a sigmoid in one place
+// (normalizingReranker), so every consumer of that deployment shares the
+// transform instead of reimplementing it. The transform is keyed off this
+// declared bit, NOT the model name: every cross-encoder reranker emits a
+// relevance logit whose canonical map to [0,1] is the same sigmoid, and the
+// model name does not reveal whether the stack already applied it (the same
+// model returns raw on llama.cpp and bounded on TEI). The sigmoid is
+// order-preserving, so it never changes ranking — only the scale. Thresholding,
+// when wanted, is still the consumer's policy: an operator-calibrated floor,
+// per deployment, not a portable constant (see RerankResult.Score).
 //
 // Known-open questions, to resolve against real usage rather than in advance:
 //   - Strict enforcement: client-side over-length truncation is deferred until
@@ -215,6 +221,17 @@ type RerankConfig struct {
 	// reserved so enabling client-side enforcement later is not a breaking
 	// change. Keep rerank shortlists chunked upstream until then.
 	Strict bool
+	// NormalizeScores, when true, maps each raw relevance score to [0,1] via a
+	// sigmoid (1/(1+e^-x)) before returning it, by wrapping the backend in a
+	// normalizingReranker. It is operator-declared rather than inferred because
+	// the wire protocol cannot distinguish a raw-logit serving stack (llama.cpp
+	// --reranking) from one that already bounds scores (Cohere/Jina/TEI): set it
+	// only for a raw-logit deployment, or it will double-normalize an
+	// already-bounded one. The sigmoid is monotonic, so it never reorders
+	// results — it only puts the score on a bounded scale a consumer can fuse
+	// with a first-stage score or threshold against. Default false (raw
+	// passthrough), which preserves the score the backend returned verbatim.
+	NormalizeScores bool
 }
 
 // NewReranker constructs a Reranker from cfg. Returns an error if any required
@@ -223,7 +240,9 @@ type RerankConfig struct {
 // RerankBackendJina is implemented (see JinaReranker); RerankBackendTEI is not
 // yet, since one Cohere/Jina implementation already covers the broadest set of
 // servers. cfg.Strict is carried on RerankConfig but not yet enforced by the
-// Jina backend — see JinaReranker.
+// Jina backend — see JinaReranker. When cfg.NormalizeScores is set, the
+// constructed backend is wrapped in a normalizingReranker so the [0,1] sigmoid
+// applies to every backend uniformly.
 func NewReranker(cfg RerankConfig) (Reranker, error) {
 	switch {
 	case cfg.Backend == "":
@@ -234,15 +253,54 @@ func NewReranker(cfg RerankConfig) (Reranker, error) {
 		return nil, fmt.Errorf("embedding: rerank Model is required")
 	}
 
+	var rr Reranker
 	switch cfg.Backend {
 	case RerankBackendJina:
-		return NewJinaReranker(cfg.BaseURL, cfg.APIKey, cfg.Model), nil
+		rr = NewJinaReranker(cfg.BaseURL, cfg.APIKey, cfg.Model)
 	case RerankBackendTEI:
 		return nil, fmt.Errorf("embedding: rerank backend %q not yet implemented", cfg.Backend)
 	default:
 		return nil, fmt.Errorf("embedding: unknown rerank backend %q", cfg.Backend)
 	}
+
+	if cfg.NormalizeScores {
+		rr = normalizingReranker{inner: rr}
+	}
+	return rr, nil
 }
+
+// normalizingReranker wraps a Reranker and maps each raw relevance score to
+// [0,1] via a sigmoid. It is backend-agnostic by design: the transform lives
+// here once rather than in each backend, so any Reranker (Jina today, TEI
+// later) gets it for free. See RerankConfig.NormalizeScores for why this is
+// opt-in and operator-declared.
+type normalizingReranker struct {
+	inner Reranker
+}
+
+// Rerank delegates to the wrapped Reranker, then sigmoid-maps each Score.
+// Because sigmoid is monotonic, the descending-Score order the inner Reranker
+// already established is preserved, so no re-sort is needed. An error (including
+// an ErrRerankUnavailable) passes through untouched so the consumer's
+// degradation logic still sees it.
+func (n normalizingReranker) Rerank(ctx context.Context, req RerankRequest) ([]RerankResult, error) {
+	results, err := n.inner.Rerank(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	for i := range results {
+		results[i].Score = sigmoid(results[i].Score)
+	}
+	return results, nil
+}
+
+// Model reports the wrapped reranker's model; normalization does not change it.
+func (n normalizingReranker) Model() string { return n.inner.Model() }
+
+// sigmoid maps a raw cross-encoder logit to a [0,1] relevance score. It is the
+// canonical transform for rerankers that emit unbounded logits (e.g. bge,
+// mxbai, Qwen3-Reranker served by llama.cpp --reranking).
+func sigmoid(x float64) float64 { return 1 / (1 + math.Exp(-x)) }
 
 // ErrRerankUnavailable marks a rerank failure caused by the backend being
 // unreachable or unhealthy — a refused or timed-out connection, an HTTP 5xx, or

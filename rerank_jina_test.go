@@ -285,3 +285,64 @@ func TestNewRerankerJinaConstructs(t *testing.T) {
 		t.Errorf("Model = %q, want bge-reranker-v2-m3", rr.Model())
 	}
 }
+
+func TestNewRerankerNormalizeScoresWrapsBackend(t *testing.T) {
+	t.Parallel()
+	// Server echoes each document's text as its raw logit score.
+	srv, _ := jinaTestServer(t, func(doc string) float64 {
+		f, _ := strconv.ParseFloat(doc, 64)
+		return f
+	})
+	rr, err := NewReranker(RerankConfig{
+		Backend:         RerankBackendJina,
+		BaseURL:         srv.URL,
+		Model:           "bge-reranker-v2-m3",
+		NormalizeScores: true,
+	})
+	if err != nil {
+		t.Fatalf("NewReranker: %v", err)
+	}
+
+	got, err := rr.Rerank(context.Background(), RerankRequest{
+		Query:     "q",
+		Documents: []string{"1.7297048568725586", "-11.033184051513672"},
+	})
+	if err != nil {
+		t.Fatalf("Rerank: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d results, want 2", len(got))
+	}
+	for i, r := range got {
+		if r.Score <= 0 || r.Score >= 1 {
+			t.Errorf("result[%d].Score = %v, want normalized into (0,1)", i, r.Score)
+		}
+	}
+}
+
+func TestNewRerankerRawScoresByDefault(t *testing.T) {
+	t.Parallel()
+	srv, _ := jinaTestServer(t, func(doc string) float64 {
+		f, _ := strconv.ParseFloat(doc, 64)
+		return f
+	})
+	rr, err := NewReranker(RerankConfig{
+		Backend: RerankBackendJina,
+		BaseURL: srv.URL,
+		Model:   "bge-reranker-v2-m3",
+	})
+	if err != nil {
+		t.Fatalf("NewReranker: %v", err)
+	}
+
+	got, err := rr.Rerank(context.Background(), RerankRequest{
+		Query:     "q",
+		Documents: []string{"1.7297048568725586"},
+	})
+	if err != nil {
+		t.Fatalf("Rerank: %v", err)
+	}
+	if got[0].Score != 1.7297048568725586 {
+		t.Errorf("Score = %v, want raw passthrough (no normalization by default)", got[0].Score)
+	}
+}

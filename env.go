@@ -20,6 +20,10 @@ const (
 	envSuffixAPIKey  = "_API_KEY"
 	envSuffixModel   = "_MODEL"
 	envSuffixStrict  = "_STRICT"
+
+	// envSuffixNormalizeScores is read only in the RERANK_* namespace; the
+	// embedder config does not use it.
+	envSuffixNormalizeScores = "_NORMALIZE_SCORES"
 )
 
 // ConfigFromEnv reads Config from EMBEDDING_BACKEND, EMBEDDING_BASE_URL,
