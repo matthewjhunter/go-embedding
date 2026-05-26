@@ -425,3 +425,24 @@ func TestJinaRerankNoTruncationForUnregisteredModel(t *testing.T) {
 		t.Errorf("unregistered model should not truncate; sent %d bytes, want 9000", len(cap.req.Documents[0]))
 	}
 }
+
+func TestJinaRerankPerCallMaxDocumentBytes(t *testing.T) {
+	// Register a generous model budget; the per-call override must win (be smaller).
+	RegisterLimits("test-rerank-override", Limits{MaxBytes: 10000})
+	t.Cleanup(func() { unregisterLimits("test-rerank-override") })
+
+	srv, cap := jinaTestServer(t, func(string) float64 { return 1 })
+	rr := NewJinaReranker(srv.URL, "", "test-rerank-override")
+
+	long := strings.Repeat("z", 500)
+	if _, err := rr.Rerank(context.Background(), RerankRequest{
+		Query:            "q",
+		Documents:        []string{long},
+		MaxDocumentBytes: 20,
+	}); err != nil {
+		t.Fatalf("Rerank: %v", err)
+	}
+	if l := len(cap.req.Documents[0]); l != 20 {
+		t.Errorf("per-call MaxDocumentBytes ignored: sent %d bytes, want 20", l)
+	}
+}

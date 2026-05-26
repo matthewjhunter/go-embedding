@@ -84,15 +84,20 @@ func (r *JinaReranker) Rerank(ctx context.Context, req RerankRequest) ([]RerankR
 		query = req.Instruction + "\n" + req.Query
 	}
 
-	// Truncate each document to the model's registered byte budget before
-	// sending. A rerank server processes a (query+document) pair as one
-	// non-causal sequence that must fit its context/micro-batch in a single
-	// forward pass; an oversize pair is rejected (e.g. llama.cpp returns HTTP
-	// 500), which the consumer would misread as a transient outage and silently
-	// degrade. Truncation preserves document count and order, so the indices
-	// returned below still map back to the caller's slice. Unregistered models
-	// have no budget and pass through unchanged.
-	docs, err := applyLimits(req.Documents, r.model, r.strict)
+	// Truncate each document before sending. A rerank server processes a
+	// (query+document) pair as one non-causal sequence that must fit its
+	// context/micro-batch in a single forward pass; an oversize pair is rejected
+	// (e.g. llama.cpp returns HTTP 500), which the consumer would misread as a
+	// transient outage and silently degrade. The budget is the per-call
+	// MaxDocumentBytes when set, else the model's registered budget (limits.go) —
+	// a caller on a tight latency budget truncates harder. Truncation preserves
+	// document count and order, so the returned indices still map back; an
+	// unbudgeted model with no override passes through unchanged.
+	maxBytes := req.MaxDocumentBytes
+	if maxBytes <= 0 {
+		maxBytes = LookupLimits(r.model).MaxBytes
+	}
+	docs, err := limitDocuments(req.Documents, maxBytes, r.model, r.strict)
 	if err != nil {
 		return nil, err
 	}

@@ -114,6 +114,34 @@ func applyLimits(texts []string, model string, strict bool) ([]string, error) {
 	return out, nil
 }
 
+// limitDocuments truncates each document to maxBytes (maxBytes <= 0 means no
+// limit). In Strict mode an oversize document is a *PermanentError instead of
+// being truncated. Unlike applyLimits it does not log per document: rerank
+// callers truncate on every request (a per-prompt recall path truncates its
+// whole pool each time), so per-document logging would be noise — truncation
+// here is configured behaviour, not an anomaly. model is used only for error
+// context.
+func limitDocuments(docs []string, maxBytes int, model string, strict bool) ([]string, error) {
+	if maxBytes <= 0 {
+		return docs, nil
+	}
+	out := make([]string, len(docs))
+	for i, d := range docs {
+		if len(d) <= maxBytes {
+			out[i] = d
+			continue
+		}
+		if strict {
+			return nil, &PermanentError{Err: fmt.Errorf(
+				"embedding: rerank document %d exceeds %s budget (%d > %d bytes)",
+				i, model, len(d), maxBytes,
+			)}
+		}
+		out[i] = truncateToBytes(d, maxBytes)
+	}
+	return out, nil
+}
+
 // truncateToBytes returns s clipped to at most max bytes, backing off any
 // trailing UTF-8 continuation bytes so the result is a valid UTF-8 string.
 func truncateToBytes(s string, max int) string {

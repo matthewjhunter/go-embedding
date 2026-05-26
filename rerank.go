@@ -198,6 +198,14 @@ type RerankRequest struct {
 	// decides how the string reaches the model (the Cohere/Jina wire protocol
 	// has no instruction field, so it is typically folded into the query).
 	Instruction string
+	// MaxDocumentBytes, when > 0, truncates each document to this many bytes
+	// before scoring, overriding the model's registered byte budget for this
+	// call. Cross-encoder latency is superlinear in sequence length, so a caller
+	// on a tight budget (e.g. a per-prompt recall path) can truncate hard while a
+	// caller that values relevance over latency leaves it 0 (use the registered
+	// budget). Truncation ranks each document on its lead content; it is lossy
+	// for signal buried in long tails.
+	MaxDocumentBytes int
 }
 
 // RerankConfig configures a new Reranker. It mirrors Config (the embedder
