@@ -211,15 +211,11 @@ type RerankConfig struct {
 	BaseURL string
 	APIKey  string
 	Model   string
-	// Strict is intended to control how the reranker reacts to a query+document
-	// pair that exceeds the model's maximum sequence length: truncate when
-	// false (default), error when true, mirroring Config.Strict.
-	//
-	// Not yet enforced: the Jina backend leaves truncation to the serving
-	// stack because reranker sequence budgets are not registered in limits.go
-	// and the Cohere/Jina wire protocol reports no truncation. The field is
-	// reserved so enabling client-side enforcement later is not a breaking
-	// change. Keep rerank shortlists chunked upstream until then.
+	// Strict controls how the Jina backend reacts to a document that exceeds the
+	// model's registered byte budget (see limits.go, e.g. bge-reranker-v2-m3):
+	// truncate to the budget and log when false (default), or reject with a
+	// *PermanentError when true, mirroring Config.Strict. A model with no
+	// registered budget is never truncated regardless of this flag.
 	Strict bool
 	// NormalizeScores, when true, maps each raw relevance score to [0,1] via a
 	// sigmoid (1/(1+e^-x)) before returning it, by wrapping the backend in a
@@ -256,7 +252,9 @@ func NewReranker(cfg RerankConfig) (Reranker, error) {
 	var rr Reranker
 	switch cfg.Backend {
 	case RerankBackendJina:
-		rr = NewJinaReranker(cfg.BaseURL, cfg.APIKey, cfg.Model)
+		jr := NewJinaReranker(cfg.BaseURL, cfg.APIKey, cfg.Model)
+		jr.strict = cfg.Strict
+		rr = jr
 	case RerankBackendTEI:
 		return nil, fmt.Errorf("embedding: rerank backend %q not yet implemented", cfg.Backend)
 	default:

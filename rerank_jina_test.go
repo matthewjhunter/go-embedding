@@ -346,3 +346,82 @@ func TestNewRerankerRawScoresByDefault(t *testing.T) {
 		t.Errorf("Score = %v, want raw passthrough (no normalization by default)", got[0].Score)
 	}
 }
+
+func TestJinaRerankTruncatesOversizeDocuments(t *testing.T) {
+	// A small registered budget makes truncation observable without huge strings.
+	RegisterLimits("test-rerank-trunc", Limits{MaxBytes: 10})
+	t.Cleanup(func() { unregisterLimits("test-rerank-trunc") })
+
+	srv, cap := jinaTestServer(t, func(string) float64 { return 1 })
+	rr := NewJinaReranker(srv.URL, "", "test-rerank-trunc")
+
+	long := strings.Repeat("x", 50)
+	got, err := rr.Rerank(context.Background(), RerankRequest{
+		Query:     "q",
+		Documents: []string{"short", long},
+	})
+	if err != nil {
+		t.Fatalf("Rerank: %v", err)
+	}
+	// The server must have received the long doc truncated to the budget, and the
+	// short doc untouched. Order/count are preserved so indices still map back.
+	if len(cap.req.Documents) != 2 {
+		t.Fatalf("server received %d docs, want 2", len(cap.req.Documents))
+	}
+	if cap.req.Documents[0] != "short" {
+		t.Errorf("doc 0 = %q, want unchanged %q", cap.req.Documents[0], "short")
+	}
+	if l := len(cap.req.Documents[1]); l != 10 {
+		t.Errorf("doc 1 sent with %d bytes, want truncated to 10", l)
+	}
+	if len(got) != 2 {
+		t.Errorf("got %d results, want 2 (indices must survive truncation)", len(got))
+	}
+}
+
+func TestJinaRerankStrictRejectsOversize(t *testing.T) {
+	RegisterLimits("test-rerank-strict", Limits{MaxBytes: 10})
+	t.Cleanup(func() { unregisterLimits("test-rerank-strict") })
+
+	srv, _ := jinaTestServer(t, func(string) float64 { return 1 })
+	rr, err := NewReranker(RerankConfig{
+		Backend: RerankBackendJina,
+		BaseURL: srv.URL,
+		Model:   "test-rerank-strict",
+		Strict:  true,
+	})
+	if err != nil {
+		t.Fatalf("NewReranker: %v", err)
+	}
+
+	_, err = rr.Rerank(context.Background(), RerankRequest{
+		Query:     "q",
+		Documents: []string{strings.Repeat("x", 50)},
+	})
+	if err == nil {
+		t.Fatal("expected error for oversize doc in strict mode")
+	}
+	var perr *PermanentError
+	if !errors.As(err, &perr) {
+		t.Errorf("expected *PermanentError in strict mode, got %T: %v", err, err)
+	}
+	// A strict-mode size rejection is a caller bug, not an outage: it must NOT be
+	// classified as a transient unavailability (which would silently degrade).
+	// IsRerankAvailable is true here, so the consumer surfaces the error instead.
+	if !IsRerankAvailable(err) {
+		t.Error("strict oversize error should surface (available=true), not degrade as a transient outage")
+	}
+}
+
+func TestJinaRerankNoTruncationForUnregisteredModel(t *testing.T) {
+	srv, cap := jinaTestServer(t, func(string) float64 { return 1 })
+	rr := NewJinaReranker(srv.URL, "", "totally-unknown-model")
+
+	long := strings.Repeat("y", 9000)
+	if _, err := rr.Rerank(context.Background(), RerankRequest{Query: "q", Documents: []string{long}}); err != nil {
+		t.Fatalf("Rerank: %v", err)
+	}
+	if len(cap.req.Documents[0]) != 9000 {
+		t.Errorf("unregistered model should not truncate; sent %d bytes, want 9000", len(cap.req.Documents[0]))
+	}
+}

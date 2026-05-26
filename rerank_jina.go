@@ -25,15 +25,19 @@ const maxRerankBatch = 256
 // speak it. APIKey, when set, is sent as a Bearer token; it is omitted for
 // unauthenticated local sidecars.
 //
-// RerankConfig.Strict is NOT enforced here: the Cohere/Jina wire protocol
-// reports no truncation, and reranker sequence budgets are not registered in
-// limits.go, so over-length query+document pairs are left to the serving stack
-// to truncate. Keep rerank shortlists chunked upstream.
+// Documents are truncated to the model's registered byte budget (limits.go)
+// before sending, so an over-length (query+document) pair can't trip a serving
+// stack that rejects oversize inputs (e.g. llama.cpp's HTTP 500). Strict mode
+// rejects instead of truncating; an unregistered model is never clipped.
 type JinaReranker struct {
 	baseURL string
 	apiKey  string
 	model   string
 	client  *http.Client
+	// strict mirrors RerankConfig.Strict: when true, a document that exceeds the
+	// model's registered byte budget is rejected (PermanentError) rather than
+	// truncated. Set by NewReranker; NewJinaReranker leaves it false (truncate).
+	strict bool
 }
 
 // NewJinaReranker creates a reranker that calls POST {baseURL}/v1/rerank.
@@ -80,10 +84,23 @@ func (r *JinaReranker) Rerank(ctx context.Context, req RerankRequest) ([]RerankR
 		query = req.Instruction + "\n" + req.Query
 	}
 
-	results := make([]RerankResult, 0, len(req.Documents))
-	for start := 0; start < len(req.Documents); start += maxRerankBatch {
-		end := min(start+maxRerankBatch, len(req.Documents))
-		batch, err := r.send(ctx, query, req.Documents[start:end])
+	// Truncate each document to the model's registered byte budget before
+	// sending. A rerank server processes a (query+document) pair as one
+	// non-causal sequence that must fit its context/micro-batch in a single
+	// forward pass; an oversize pair is rejected (e.g. llama.cpp returns HTTP
+	// 500), which the consumer would misread as a transient outage and silently
+	// degrade. Truncation preserves document count and order, so the indices
+	// returned below still map back to the caller's slice. Unregistered models
+	// have no budget and pass through unchanged.
+	docs, err := applyLimits(req.Documents, r.model, r.strict)
+	if err != nil {
+		return nil, err
+	}
+
+	results := make([]RerankResult, 0, len(docs))
+	for start := 0; start < len(docs); start += maxRerankBatch {
+		end := min(start+maxRerankBatch, len(docs))
+		batch, err := r.send(ctx, query, docs[start:end])
 		if err != nil {
 			return nil, err
 		}
