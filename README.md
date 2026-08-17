@@ -61,7 +61,10 @@ Recognised vars: `EMBEDDING_BACKEND`, `EMBEDDING_BASE_URL`,
 `EMBEDDING_TIMEOUT`, `EMBEDDING_PER_INPUT_TIMEOUT`,
 `EMBEDDING_MAX_BYTES`, `EMBEDDING_MAX_TOKENS`. Unset (or empty) vars
 fall back to `DefaultConfig`. Unknown backend names, unparseable bools,
-durations, and budgets return an error.
+durations, and budgets return an error. A budget must be positive: `0` is
+rejected rather than read as "no budget", since once it reaches `Config` it
+is indistinguishable from unset. Unset the variable to use the model's
+registered limits.
 
 For per-app namespaces use a custom prefix:
 
