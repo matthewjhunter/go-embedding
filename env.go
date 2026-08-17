@@ -120,14 +120,23 @@ func ConfigFromEnvPrefix(prefix string) (Config, error) {
 	return cfg, nil
 }
 
-// parseBudgetEnv parses a non-negative integer budget env var.
+// parseBudgetEnv parses a positive integer budget env var.
+//
+// Zero is rejected rather than accepted as "no budget". Once it reaches
+// Config a zero is indistinguishable from unset, so accepting it would leave
+// an operator who wrote MAX_TOKENS=0 believing a budget is in force when none
+// is -- the same silent-misconfiguration shape that clip detection exists to
+// remove. Someone who wants the registry default unsets the variable.
 func parseBudgetEnv(source, value string) (int, error) {
 	n, err := strconv.Atoi(value)
 	if err != nil {
 		return 0, fmt.Errorf("embedding: invalid %s value %q (want a whole number): %w", source, value, err)
 	}
-	if n < 0 {
-		return 0, fmt.Errorf("embedding: invalid %s value %q: a budget cannot be negative", source, value)
+	if n <= 0 {
+		return 0, fmt.Errorf(
+			"embedding: invalid %s value %q: a budget must be positive (unset it to use the model's registered limits)",
+			source, value,
+		)
 	}
 	return n, nil
 }
