@@ -58,9 +58,10 @@ e, err := embedding.New(cfg)
 
 Recognised vars: `EMBEDDING_BACKEND`, `EMBEDDING_BASE_URL`,
 `EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_STRICT`,
-`EMBEDDING_TIMEOUT`, `EMBEDDING_PER_INPUT_TIMEOUT`. Unset (or empty)
-vars fall back to `DefaultConfig`. Unknown backend names, unparseable
-bools, and unparseable durations return an error.
+`EMBEDDING_TIMEOUT`, `EMBEDDING_PER_INPUT_TIMEOUT`,
+`EMBEDDING_MAX_BYTES`, `EMBEDDING_MAX_TOKENS`. Unset (or empty) vars
+fall back to `DefaultConfig`. Unknown backend names, unparseable bools,
+durations, and budgets return an error.
 
 For per-app namespaces use a custom prefix:
 
@@ -170,7 +171,56 @@ Register custom models at startup:
 embedding.RegisterLimits("my-custom-embedder", embedding.Limits{MaxBytes: 4096})
 ```
 
-Models not in the registry get no enforcement.
+Or override the budget per embedder, without touching the registry:
+
+```go
+e, _ := embedding.New(embedding.Config{
+    // ...
+    MaxTokens: 8192,  // or EMBEDDING_MAX_TOKENS
+})
+```
+
+A model the registry has never heard of becomes enforceable from
+`MaxTokens` alone -- a byte budget is derived from it conservatively --
+so a new model does not need a library edit. Models with neither a
+registry entry nor an override get no enforcement.
+
+## Clipped input
+
+A byte budget is a stand-in for a token budget, and the conversion is
+approximate. When it guesses high, the input overruns the model's
+context, and the two backend families fail differently: llama.cpp and
+Lemonade reject the request outright, while **Ollama silently truncates**
+-- returning a normal-looking vector computed from a document whose tail
+was thrown away. Nothing about the response says so.
+
+Both protocols do report the token count they processed
+(`prompt_eval_count`, `usage.prompt_tokens`), and a count that has
+reached the budget is the fingerprint of an input that was cut. Set
+`OnUsage` to see it:
+
+```go
+e, _ := embedding.New(embedding.Config{
+    // ...
+    OnUsage: embedding.UsageFunc(func(u embedding.Usage) {
+        if u.Clipped {
+            clipped.Add(1)  // measure your real clip rate
+        }
+    }),
+})
+```
+
+`Strict: true` turns a clipped result into an error instead, on the same
+reasoning that makes strict mode refuse to truncate before sending.
+
+Two things `Clipped` deliberately does not claim. It stays false for a
+multi-input request, because both protocols report one total for the
+whole batch and an over-budget total across several inputs is the normal
+shape rather than evidence about any one of them -- single-input requests
+are what this catches, including every one-by-one fallback
+`BatchEmbedResults` performs. And it cannot tell a clipped input from one
+that legitimately lands within a few tokens of the budget; the budget
+sits below the true context window precisely so nothing lands there.
 
 ## Structured input: fields and task prompts
 
