@@ -25,6 +25,9 @@ const (
 	envSuffixTimeout         = "_TIMEOUT"
 	envSuffixPerInputTimeout = "_PER_INPUT_TIMEOUT"
 
+	envSuffixMaxBytes  = "_MAX_BYTES"
+	envSuffixMaxTokens = "_MAX_TOKENS"
+
 	// envSuffixNormalizeScores is read only in the RERANK_* namespace; the
 	// embedder config does not use it.
 	envSuffixNormalizeScores = "_NORMALIZE_SCORES"
@@ -100,7 +103,33 @@ func ConfigFromEnvPrefix(prefix string) (Config, error) {
 		}
 		cfg.PerInputTimeout = d
 	}
+	if v, src := envCascade(prefix, envSuffixMaxBytes); v != "" {
+		n, err := parseBudgetEnv(src, v)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.MaxBytes = n
+	}
+	if v, src := envCascade(prefix, envSuffixMaxTokens); v != "" {
+		n, err := parseBudgetEnv(src, v)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.MaxTokens = n
+	}
 	return cfg, nil
+}
+
+// parseBudgetEnv parses a non-negative integer budget env var.
+func parseBudgetEnv(source, value string) (int, error) {
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("embedding: invalid %s value %q (want a whole number): %w", source, value, err)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("embedding: invalid %s value %q: a budget cannot be negative", source, value)
+	}
+	return n, nil
 }
 
 // parseTimeoutEnv parses a duration env var, accepting "none" to disable the

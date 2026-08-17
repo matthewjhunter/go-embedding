@@ -21,6 +21,10 @@ type OllamaEmbedder struct {
 	// timeouts bounds each HTTP request; see Config.Timeout. The deprecated
 	// constructor leaves it at the defaults rather than unbounded.
 	timeouts timeouts
+	// limits is the resolved byte/token budget; see effectiveLimits.
+	limits Limits
+	// onUsage, when set, receives a Usage per request. See Config.OnUsage.
+	onUsage UsageReporter
 }
 
 // NewOllamaEmbedder creates an embedder that calls the Ollama /api/embed endpoint.
@@ -33,6 +37,7 @@ func NewOllamaEmbedder(baseURL, model string) *OllamaEmbedder {
 		model:    model,
 		client:   &http.Client{},
 		timeouts: resolveTimeouts(0, 0),
+		limits:   LookupLimits(model),
 	}
 }
 
@@ -43,6 +48,10 @@ type ollamaEmbedRequest struct {
 
 type ollamaEmbedResponse struct {
 	Embeddings [][]float32 `json:"embeddings"`
+	// PromptEvalCount is the token count Ollama processed for this request.
+	// It is the only ground truth about input size without a tokenizer, and
+	// it clamps to the context window when the input overran it.
+	PromptEvalCount int `json:"prompt_eval_count"`
 }
 
 // Embed generates vector embeddings for the given texts via the Ollama API.
@@ -50,7 +59,7 @@ type ollamaEmbedResponse struct {
 // (see limits.go), then, if the backend still rejects it as too long,
 // adaptively shrunk and retried (see embedShrinking).
 func (e *OllamaEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
-	texts, err := applyLimits(texts, e.model, e.strict)
+	texts, err := applyLimits(texts, e.limits, e.model, e.strict)
 	if err != nil {
 		return nil, err
 	}
@@ -110,6 +119,10 @@ func (e *OllamaEmbedder) send(ctx context.Context, texts []string) ([][]float32,
 
 	if d := len(embedResp.Embeddings[0]); d > 0 {
 		e.dim.Store(int32(d))
+	}
+
+	if err := checkUsage(e.model, e.limits, texts, embedResp.PromptEvalCount, e.strict, e.onUsage); err != nil {
+		return nil, err
 	}
 
 	return embedResp.Embeddings, nil

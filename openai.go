@@ -25,6 +25,10 @@ type OpenAIEmbedder struct {
 	// timeouts bounds each HTTP request; see Config.Timeout. The deprecated
 	// constructor leaves it at the defaults rather than unbounded.
 	timeouts timeouts
+	// limits is the resolved byte/token budget; see effectiveLimits.
+	limits Limits
+	// onUsage, when set, receives a Usage per request. See Config.OnUsage.
+	onUsage UsageReporter
 }
 
 // NewOpenAIEmbedder creates an embedder that calls POST /v1/embeddings.
@@ -39,6 +43,7 @@ func NewOpenAIEmbedder(baseURL, apiKey, model string) *OpenAIEmbedder {
 		model:    model,
 		client:   &http.Client{},
 		timeouts: resolveTimeouts(0, 0),
+		limits:   LookupLimits(model),
 	}
 }
 
@@ -52,6 +57,11 @@ type openAIEmbedResponse struct {
 		Embedding []float32 `json:"embedding"`
 		Index     int       `json:"index"`
 	} `json:"data"`
+	// Usage.PromptTokens is the token count the backend processed for this
+	// request -- the OpenAI-shape equivalent of Ollama's prompt_eval_count.
+	Usage struct {
+		PromptTokens int `json:"prompt_tokens"`
+	} `json:"usage"`
 }
 
 // Embed generates vector embeddings for the given texts via the OpenAI API.
@@ -59,7 +69,7 @@ type openAIEmbedResponse struct {
 // (see limits.go), then, if the backend still rejects it as too long,
 // adaptively shrunk and retried (see embedShrinking).
 func (e *OpenAIEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
-	texts, err := applyLimits(texts, e.model, e.strict)
+	texts, err := applyLimits(texts, e.limits, e.model, e.strict)
 	if err != nil {
 		return nil, err
 	}
@@ -132,6 +142,10 @@ func (e *OpenAIEmbedder) send(ctx context.Context, texts []string) ([][]float32,
 
 	if d := len(results[0]); d > 0 {
 		e.dim.Store(int32(d))
+	}
+
+	if err := checkUsage(e.model, e.limits, texts, embedResp.Usage.PromptTokens, e.strict, e.onUsage); err != nil {
+		return nil, err
 	}
 
 	return results, nil
