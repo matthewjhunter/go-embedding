@@ -1,0 +1,5 @@
+# Claude Code's per-repo working directory. Holds session state and git
+# worktrees, none of which belong in the repo. Ignored because a `git add -A`
+# will otherwise sweep it in: that is how a stray scheduled_tasks.lock ended
+# up in a herald PR and needed a follow-up to remove.
+.claude/
