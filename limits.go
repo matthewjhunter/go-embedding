@@ -10,9 +10,10 @@ import (
 // Limits describes the maximum input size a model accepts in a single
 // embed call. Zero values mean "no enforcement."
 //
-// MaxBytes is enforced before the request is sent. MaxTokens is reserved
-// for a future tokenizer-aware enforcement path; it is informational in
-// this version.
+// MaxBytes is enforced before the request is sent. MaxTokens is enforced
+// after it: the backend reports the token count it actually processed, and a
+// count that has reached the budget means the input was clipped (see Usage).
+// MaxTokens also derives a byte budget when none is registered.
 type Limits struct {
 	MaxBytes  int
 	MaxTokens int
@@ -78,13 +79,43 @@ func unregisterLimits(model string) {
 	delete(modelLimits, model)
 }
 
+// conservativeBytesPerToken converts a token budget into a byte budget when
+// only the former is known. Measured on the herald corpus, real text runs
+// 1.7-2.0 bytes per token against nomic-embed-text -- not the ~3 the static
+// table assumed -- and denser content (CJK, base64, source, URL-heavy text)
+// runs lower still. 2 is chosen to under-fill the window rather than overrun
+// it, since overrunning is silently lossy on Ollama and a hard reject on
+// llama.cpp. It is a floor pending per-model calibration from reported token
+// counts (#12), which will replace this constant with a learned ratio.
+const conservativeBytesPerToken = 2
+
+// effectiveLimits resolves the budget in force for a model: the registered
+// limits, with any non-zero override from Config taking precedence.
+//
+// When only a token budget is known -- a model the registry has never heard
+// of, configured by an operator -- a byte budget is derived from it, so a new
+// model becomes enforceable from config alone rather than needing a library
+// edit. That is the case an embedder migration runs into first.
+func effectiveLimits(model string, override Limits) Limits {
+	l := LookupLimits(model)
+	if override.MaxBytes > 0 {
+		l.MaxBytes = override.MaxBytes
+	}
+	if override.MaxTokens > 0 {
+		l.MaxTokens = override.MaxTokens
+	}
+	if l.MaxBytes == 0 && l.MaxTokens > 0 {
+		l.MaxBytes = l.MaxTokens * conservativeBytesPerToken
+	}
+	return l
+}
+
 // applyLimits enforces limits against texts. In Strict mode, oversize input
 // returns an error. Otherwise oversize input is truncated to MaxBytes and a
 // log line is emitted so the truncation is not silent.
 //
 // Returns the (possibly truncated) texts, or an error in Strict mode.
-func applyLimits(texts []string, model string, strict bool) ([]string, error) {
-	limits := LookupLimits(model)
+func applyLimits(texts []string, limits Limits, model string, strict bool) ([]string, error) {
 	if limits.MaxBytes == 0 {
 		return texts, nil
 	}

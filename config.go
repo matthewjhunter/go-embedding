@@ -54,6 +54,20 @@ type Config struct {
 	// DefaultPerInputTimeout; NoTimeout disables the scaling and gives every
 	// request the flat base budget.
 	PerInputTimeout time.Duration
+
+	// MaxBytes and MaxTokens override the registered per-model budget (see
+	// limits.go). Zero means "use whatever is registered". Setting MaxTokens
+	// for an unregistered model derives a byte budget from it, so a new model
+	// is enforceable from config alone without a library edit.
+	MaxBytes  int
+	MaxTokens int
+
+	// OnUsage, when set, receives a Usage after each request the backend
+	// reported a token count for. It is how a caller measures its real clip
+	// rate; without it, a backend that silently truncates over-length input
+	// stays invisible. Called synchronously on the embedding path, so keep it
+	// cheap and non-blocking. Wrap a plain function with UsageFunc.
+	OnUsage UsageReporter
 }
 
 // New constructs an Embedder from cfg. Returns an error if any required
@@ -73,11 +87,15 @@ func New(cfg Config) (Embedder, error) {
 		e := NewOllamaEmbedder(cfg.BaseURL, cfg.Model)
 		e.strict = cfg.Strict
 		e.timeouts = resolveTimeouts(cfg.Timeout, cfg.PerInputTimeout)
+		e.limits = effectiveLimits(cfg.Model, Limits{MaxBytes: cfg.MaxBytes, MaxTokens: cfg.MaxTokens})
+		e.onUsage = cfg.OnUsage
 		return e, nil
 	case BackendOpenAI:
 		e := NewOpenAIEmbedder(cfg.BaseURL, cfg.APIKey, cfg.Model)
 		e.strict = cfg.Strict
 		e.timeouts = resolveTimeouts(cfg.Timeout, cfg.PerInputTimeout)
+		e.limits = effectiveLimits(cfg.Model, Limits{MaxBytes: cfg.MaxBytes, MaxTokens: cfg.MaxTokens})
+		e.onUsage = cfg.OnUsage
 		return e, nil
 	default:
 		return nil, fmt.Errorf("embedding: unknown backend %q", cfg.Backend)

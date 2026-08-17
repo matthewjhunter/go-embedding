@@ -25,6 +25,9 @@ const (
 	envSuffixTimeout         = "_TIMEOUT"
 	envSuffixPerInputTimeout = "_PER_INPUT_TIMEOUT"
 
+	envSuffixMaxBytes  = "_MAX_BYTES"
+	envSuffixMaxTokens = "_MAX_TOKENS"
+
 	// envSuffixNormalizeScores is read only in the RERANK_* namespace; the
 	// embedder config does not use it.
 	envSuffixNormalizeScores = "_NORMALIZE_SCORES"
@@ -100,7 +103,42 @@ func ConfigFromEnvPrefix(prefix string) (Config, error) {
 		}
 		cfg.PerInputTimeout = d
 	}
+	if v, src := envCascade(prefix, envSuffixMaxBytes); v != "" {
+		n, err := parseBudgetEnv(src, v)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.MaxBytes = n
+	}
+	if v, src := envCascade(prefix, envSuffixMaxTokens); v != "" {
+		n, err := parseBudgetEnv(src, v)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.MaxTokens = n
+	}
 	return cfg, nil
+}
+
+// parseBudgetEnv parses a positive integer budget env var.
+//
+// Zero is rejected rather than accepted as "no budget". Once it reaches
+// Config a zero is indistinguishable from unset, so accepting it would leave
+// an operator who wrote MAX_TOKENS=0 believing a budget is in force when none
+// is -- the same silent-misconfiguration shape that clip detection exists to
+// remove. Someone who wants the registry default unsets the variable.
+func parseBudgetEnv(source, value string) (int, error) {
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("embedding: invalid %s value %q (want a whole number): %w", source, value, err)
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf(
+			"embedding: invalid %s value %q: a budget must be positive (unset it to use the model's registered limits)",
+			source, value,
+		)
+	}
+	return n, nil
 }
 
 // parseTimeoutEnv parses a duration env var, accepting "none" to disable the
