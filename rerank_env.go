@@ -77,5 +77,19 @@ func RerankConfigFromEnvPrefix(prefix string) (RerankConfig, error) {
 		}
 		cfg.NormalizeScores = b
 	}
+	if v, src := envCascadeTo(prefix, DefaultRerankEnvPrefix, envSuffixTimeout); v != "" {
+		d, err := parseTimeoutEnv(src, v)
+		if err != nil {
+			return RerankConfig{}, err
+		}
+		cfg.Timeout = d
+	}
+	if v, src := envCascadeTo(prefix, DefaultRerankEnvPrefix, envSuffixPerInputTimeout); v != "" {
+		d, err := parseTimeoutEnv(src, v)
+		if err != nil {
+			return RerankConfig{}, err
+		}
+		cfg.PerInputTimeout = d
+	}
 	return cfg, nil
 }

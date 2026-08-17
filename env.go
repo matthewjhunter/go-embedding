@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // DefaultEnvPrefix is the prefix used by ConfigFromEnv. Callers wanting to
@@ -20,6 +21,9 @@ const (
 	envSuffixAPIKey  = "_API_KEY"
 	envSuffixModel   = "_MODEL"
 	envSuffixStrict  = "_STRICT"
+
+	envSuffixTimeout         = "_TIMEOUT"
+	envSuffixPerInputTimeout = "_PER_INPUT_TIMEOUT"
 
 	// envSuffixNormalizeScores is read only in the RERANK_* namespace; the
 	// embedder config does not use it.
@@ -82,7 +86,45 @@ func ConfigFromEnvPrefix(prefix string) (Config, error) {
 		}
 		cfg.Strict = b
 	}
+	if v, src := envCascade(prefix, envSuffixTimeout); v != "" {
+		d, err := parseTimeoutEnv(src, v)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.Timeout = d
+	}
+	if v, src := envCascade(prefix, envSuffixPerInputTimeout); v != "" {
+		d, err := parseTimeoutEnv(src, v)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.PerInputTimeout = d
+	}
 	return cfg, nil
+}
+
+// parseTimeoutEnv parses a duration env var, accepting "none" to disable the
+// deadline. A bare number is rejected rather than guessed at: "30" is as
+// likely to mean seconds as milliseconds, and silently choosing wrong turns a
+// deadline into either a hang or a stream of spurious timeouts.
+func parseTimeoutEnv(source, value string) (time.Duration, error) {
+	if strings.EqualFold(value, "none") {
+		return NoTimeout, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"embedding: invalid %s value %q (want a duration like 30s, or \"none\"): %w",
+			source, value, err,
+		)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf(
+			"embedding: invalid %s value %q: a negative duration is not a deadline (use \"none\" to disable)",
+			source, value,
+		)
+	}
+	return d, nil
 }
 
 // envCascade looks up suffix under prefix first, then under DefaultEnvPrefix.

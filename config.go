@@ -1,6 +1,9 @@
 package embedding
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // Backend identifies which embedding backend an Embedder uses.
 type Backend string
@@ -39,6 +42,18 @@ type Config struct {
 	APIKey  string
 	Model   string
 	Strict  bool
+
+	// Timeout is the base deadline applied to each HTTP request, conveyed as
+	// a context deadline so failures arrive as context.DeadlineExceeded and
+	// compose with the caller's own cancellation. Zero uses DefaultTimeout;
+	// NoTimeout leaves requests unbounded.
+	Timeout time.Duration
+
+	// PerInputTimeout is added to Timeout for each input in a request, so a
+	// batch gets a budget proportional to its size. Zero uses
+	// DefaultPerInputTimeout; NoTimeout disables the scaling and gives every
+	// request the flat base budget.
+	PerInputTimeout time.Duration
 }
 
 // New constructs an Embedder from cfg. Returns an error if any required
@@ -57,10 +72,12 @@ func New(cfg Config) (Embedder, error) {
 	case BackendOllama:
 		e := NewOllamaEmbedder(cfg.BaseURL, cfg.Model)
 		e.strict = cfg.Strict
+		e.timeouts = resolveTimeouts(cfg.Timeout, cfg.PerInputTimeout)
 		return e, nil
 	case BackendOpenAI:
 		e := NewOpenAIEmbedder(cfg.BaseURL, cfg.APIKey, cfg.Model)
 		e.strict = cfg.Strict
+		e.timeouts = resolveTimeouts(cfg.Timeout, cfg.PerInputTimeout)
 		return e, nil
 	default:
 		return nil, fmt.Errorf("embedding: unknown backend %q", cfg.Backend)

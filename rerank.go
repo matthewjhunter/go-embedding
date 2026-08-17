@@ -7,6 +7,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"time"
 )
 
 // =============================================================================
@@ -236,6 +237,16 @@ type RerankConfig struct {
 	// with a first-stage score or threshold against. Default false (raw
 	// passthrough), which preserves the score the backend returned verbatim.
 	NormalizeScores bool
+
+	// Timeout is the base deadline applied to each HTTP request, conveyed as
+	// a context deadline. Zero uses DefaultTimeout; NoTimeout leaves requests
+	// unbounded. Mirrors Config.Timeout.
+	Timeout time.Duration
+
+	// PerInputTimeout is added to Timeout for each document in a request, so
+	// a large candidate set gets a budget proportional to its size. Zero uses
+	// DefaultPerInputTimeout; NoTimeout disables the scaling.
+	PerInputTimeout time.Duration
 }
 
 // NewReranker constructs a Reranker from cfg. Returns an error if any required
@@ -262,6 +273,7 @@ func NewReranker(cfg RerankConfig) (Reranker, error) {
 	case RerankBackendJina:
 		jr := NewJinaReranker(cfg.BaseURL, cfg.APIKey, cfg.Model)
 		jr.strict = cfg.Strict
+		jr.timeouts = resolveTimeouts(cfg.Timeout, cfg.PerInputTimeout)
 		rr = jr
 	case RerankBackendTEI:
 		return nil, fmt.Errorf("embedding: rerank backend %q not yet implemented", cfg.Backend)

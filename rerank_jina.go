@@ -38,16 +38,19 @@ type JinaReranker struct {
 	// model's registered byte budget is rejected (PermanentError) rather than
 	// truncated. Set by NewReranker; NewJinaReranker leaves it false (truncate).
 	strict bool
+	// timeouts bounds each HTTP request; see RerankConfig.Timeout.
+	timeouts timeouts
 }
 
 // NewJinaReranker creates a reranker that calls POST {baseURL}/v1/rerank.
 // apiKey may be empty for unauthenticated local endpoints.
 func NewJinaReranker(baseURL, apiKey, model string) *JinaReranker {
 	return &JinaReranker{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		apiKey:  apiKey,
-		model:   model,
-		client:  &http.Client{},
+		baseURL:  strings.TrimRight(baseURL, "/"),
+		apiKey:   apiKey,
+		model:    model,
+		client:   &http.Client{},
+		timeouts: resolveTimeouts(0, 0),
 	}
 }
 
@@ -140,6 +143,9 @@ func (r *JinaReranker) send(ctx context.Context, query string, documents []strin
 	if err != nil {
 		return nil, fmt.Errorf("jina rerank: marshal: %w", err)
 	}
+
+	ctx, cancel := r.timeouts.apply(ctx, len(documents))
+	defer cancel()
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, r.baseURL+"/v1/rerank", bytes.NewReader(data))
 	if err != nil {
