@@ -57,9 +57,10 @@ e, err := embedding.New(cfg)
 ```
 
 Recognised vars: `EMBEDDING_BACKEND`, `EMBEDDING_BASE_URL`,
-`EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_STRICT`. Unset (or
-empty) vars fall back to `DefaultConfig`. Unknown backend names or
-unparseable bools return an error.
+`EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_STRICT`,
+`EMBEDDING_TIMEOUT`, `EMBEDDING_PER_INPUT_TIMEOUT`. Unset (or empty)
+vars fall back to `DefaultConfig`. Unknown backend names, unparseable
+bools, and unparseable durations return an error.
 
 For per-app namespaces use a custom prefix:
 
@@ -104,6 +105,49 @@ if err := embedding.CheckFingerprint(stored, current); err != nil {
     }
 }
 ```
+
+## Request deadlines
+
+Every HTTP request carries a deadline, applied as a context timeout so
+a failure arrives as `context.DeadlineExceeded` and composes with the
+caller's own cancellation. Without one, a backend that accepts a
+connection and then stops responding hangs the caller forever, which
+is worse than an error: an error retries, a hang stalls the queue.
+
+The budget scales with the request, because request cost does:
+`Timeout + PerInputTimeout * len(texts)`. A single flat number would
+either trip on a large batch or be too loose to catch a hang on a
+small one.
+
+```go
+e, _ := embedding.New(embedding.Config{
+    Backend:         embedding.BackendOllama,
+    BaseURL:         "http://gpu-host:11434",
+    Model:           "nomic-embed-text",
+    Timeout:         30 * time.Second, // base, zero uses DefaultTimeout
+    PerInputTimeout: 2 * time.Second,  // per input, zero uses DefaultPerInputTimeout
+})
+```
+
+Defaults are `DefaultTimeout` (30s) and `DefaultPerInputTimeout` (2s),
+so a 25-input batch gets 80s. They are deliberately generous: the job
+is catching a wedged backend, not policing a slow one. Tune them down
+only with measurements from your own hardware.
+
+Zero means "use the default" rather than "disable", so a caller who
+never thinks about timeouts still gets one. To opt out, set
+`Timeout: embedding.NoTimeout` for unbounded requests, or
+`PerInputTimeout: embedding.NoTimeout` to keep a flat budget that
+doesn't scale with batch size.
+
+From the environment, both take a duration string (`45s`, `500ms`) or
+the word `none` to disable. A bare number is an error rather than a
+guess -- `30` is as likely to mean seconds as milliseconds, and
+choosing wrong silently turns the deadline into either a hang or a
+stream of spurious timeouts.
+
+`RerankConfig` carries the same two fields, scaling on the document
+count.
 
 ## Limits
 

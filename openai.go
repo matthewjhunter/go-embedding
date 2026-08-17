@@ -22,6 +22,9 @@ type OpenAIEmbedder struct {
 	client  *http.Client
 	dim     atomic.Int32
 	strict  bool
+	// timeouts bounds each HTTP request; see Config.Timeout. The deprecated
+	// constructor leaves it at the defaults rather than unbounded.
+	timeouts timeouts
 }
 
 // NewOpenAIEmbedder creates an embedder that calls POST /v1/embeddings.
@@ -31,10 +34,11 @@ type OpenAIEmbedder struct {
 // This constructor will be removed in v1.0.
 func NewOpenAIEmbedder(baseURL, apiKey, model string) *OpenAIEmbedder {
 	return &OpenAIEmbedder{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		apiKey:  apiKey,
-		model:   model,
-		client:  &http.Client{},
+		baseURL:  strings.TrimRight(baseURL, "/"),
+		apiKey:   apiKey,
+		model:    model,
+		client:   &http.Client{},
+		timeouts: resolveTimeouts(0, 0),
 	}
 }
 
@@ -77,6 +81,9 @@ func (e *OpenAIEmbedder) send(ctx context.Context, texts []string) ([][]float32,
 	if err != nil {
 		return nil, fmt.Errorf("openai embed: marshal: %w", err)
 	}
+
+	ctx, cancel := e.timeouts.apply(ctx, len(texts))
+	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.baseURL+"/v1/embeddings", bytes.NewReader(data))
 	if err != nil {

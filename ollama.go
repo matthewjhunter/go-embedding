@@ -18,6 +18,9 @@ type OllamaEmbedder struct {
 	client  *http.Client
 	dim     atomic.Int32
 	strict  bool
+	// timeouts bounds each HTTP request; see Config.Timeout. The deprecated
+	// constructor leaves it at the defaults rather than unbounded.
+	timeouts timeouts
 }
 
 // NewOllamaEmbedder creates an embedder that calls the Ollama /api/embed endpoint.
@@ -26,9 +29,10 @@ type OllamaEmbedder struct {
 // This constructor will be removed in v1.0.
 func NewOllamaEmbedder(baseURL, model string) *OllamaEmbedder {
 	return &OllamaEmbedder{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		model:   model,
-		client:  &http.Client{},
+		baseURL:  strings.TrimRight(baseURL, "/"),
+		model:    model,
+		client:   &http.Client{},
+		timeouts: resolveTimeouts(0, 0),
 	}
 }
 
@@ -68,6 +72,9 @@ func (e *OllamaEmbedder) send(ctx context.Context, texts []string) ([][]float32,
 	if err != nil {
 		return nil, fmt.Errorf("ollama embed: marshal: %w", err)
 	}
+
+	ctx, cancel := e.timeouts.apply(ctx, len(texts))
+	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.baseURL+"/api/embed", bytes.NewReader(data))
 	if err != nil {
