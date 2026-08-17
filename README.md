@@ -260,22 +260,48 @@ intentional.
 
 ## Batch helper
 
-`BatchEmbed` issues batch embed calls and falls back to one-by-one when
-a backend returns either an error or fewer vectors than inputs (some
-servers return 200 with a partial response). The result slice is
-always the same length as the input; failed entries are nil so the
-caller keeps index alignment.
+`BatchEmbedResults` issues batch embed calls and falls back to
+one-by-one when a backend returns either an error or fewer vectors
+than inputs (some servers return 200 with a partial response). The
+result slice is always the same length as the input, so the caller
+keeps index alignment.
 
 ```go
-vectors, err := embedding.BatchEmbed(ctx, e, texts, 25, func(done, total int) {
+results, err := embedding.BatchEmbedResults(ctx, e, texts, 25, func(done, total int) {
     log.Printf("embedded %d/%d", done, total)
 })
+for i, r := range results {
+    if r.Err != nil {
+        log.Printf("input %d failed: %v (retryable=%v)", i, r.Err, embedding.IsRetryable(r.Err))
+        continue
+    }
+    store(texts[i], r.Vector)
+}
 ```
 
-`BatchEmbed` only returns a non-nil error if every input failed.
+It only returns a non-nil error if every input failed.
+
+Each failure is an `*ItemError`, which unwraps to the cause of that
+input's individual attempt and separately records `Batch` — the
+batch-level failure, when the whole batch request failed rather than
+just this input. That distinction is what tells one poisoned input
+apart from a failing backend: an oversized input fails while its
+neighbours succeed, whereas a backend that is down fails every input
+in the batch with the same `Batch` cause. A caller draining a long
+queue can stop on the latter instead of grinding through the rest to
+fail identically.
+
+The older `BatchEmbed` returns bare `[][]float32` with nil for failed
+entries. It is deprecated: a nil entry can't be told apart from an
+input the caller meant to skip, and it discards the cause needed to
+decide whether a retry is worthwhile.
 
 ## Compatibility
 
 `NewOllamaEmbedder` and `NewOpenAIEmbedder` are still exported but
 marked `Deprecated`. They will be removed in v1.0; new code should use
 `New(Config)`.
+
+`BatchEmbed` is likewise deprecated in favour of `BatchEmbedResults`.
+Its behaviour is unchanged — it is now a thin wrapper that drops the
+per-input errors — so existing callers keep working until v1.0.
