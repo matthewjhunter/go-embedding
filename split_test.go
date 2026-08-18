@@ -269,19 +269,25 @@ func concat(chunks []Chunk) string {
 // an infinite loop or a mid-rune cut there is far more expensive to find in
 // production than here.
 func FuzzSplit(f *testing.F) {
-	f.Add("hello world", 10, 0, 0)
-	f.Add(strings.Repeat("para\n\ngraph ", 20), 30, 5, 3)
-	f.Add("日本語のテキスト", 5, 2, 0)
-	f.Add("", 0, 0, 0)
+	f.Add("hello world", 10, 0, 0, false)
+	f.Add(strings.Repeat("para\n\ngraph ", 20), 30, 5, 3, false)
+	f.Add("日本語のテキスト", 5, 2, 0, false)
+	f.Add("", 0, 0, 0, false)
+	f.Add("# H\n\nbody\n\n## H2\n\nmore body\n", 20, 4, 2, true)
+	f.Add("Setext\n===\n\n```\n# fake\n```\n\n## Real\n", 16, 0, 0, true)
 
-	f.Fuzz(func(t *testing.T, text string, maxBytes, overlap, minBytes int) {
+	f.Fuzz(func(t *testing.T, text string, maxBytes, overlap, minBytes int, structured bool) {
 		// Keep the parameters in a sane range; the point is the text, and
 		// enormous values only exercise the allocator.
 		if maxBytes < 0 || maxBytes > 1<<16 || overlap < 0 || overlap > 1<<16 || minBytes < 0 || minBytes > 1<<16 {
 			t.Skip()
 		}
+		structure := StructureNone
+		if structured {
+			structure = StructureMarkdown
+		}
 		got := Split("nomic-embed-text", text, SplitOptions{
-			MaxBytes: maxBytes, Overlap: overlap, MinBytes: minBytes,
+			MaxBytes: maxBytes, Overlap: overlap, MinBytes: minBytes, Structure: structure,
 		})
 		// Mirror the two adjustments Split documents: an unset budget falls
 		// back to the model's, and a sub-rune budget is floored.
