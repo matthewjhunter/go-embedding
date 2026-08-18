@@ -86,6 +86,7 @@ func checkUsage(model string, limits Limits, texts []string, tokens int, strict 
 		MaxTokens: limits.MaxTokens,
 		Clipped:   limits.MaxTokens > 0 && len(texts) == 1 && tokens >= limits.MaxTokens,
 	}
+	recordUsage(u)
 	if onUsage != nil {
 		onUsage.ReportUsage(u)
 	}
