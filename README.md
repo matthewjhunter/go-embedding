@@ -225,6 +225,49 @@ are what this catches, including every one-by-one fallback
 that legitimately lands within a few tokens of the budget; the budget
 sits below the true context window precisely so nothing lands there.
 
+## Chunking
+
+A vector has fixed capacity. Pouring a whole long document into one
+embedding averages away the specificity retrieval depends on, and
+anything past the context window is silently discarded on top of that
+(see "Clipped input" above). `Split` cuts a document into segments that
+each fit a byte budget:
+
+```go
+chunks := embedding.Split("nomic-embed-text", article, embedding.SplitOptions{
+    MaxBytes: 1024,  // ~512 tokens, the usual retrieval working range
+    Overlap:  128,   // carry context across the boundary
+    MinBytes: 200,   // no trailing slivers
+})
+for _, c := range chunks {
+    store(c.Ordinal, c.Start, c.End, embed(c.Text))
+}
+```
+
+Boundaries are chosen in descending preference: paragraph, line,
+sentence, word, and only a hard cut when a single unbroken run leaves no
+choice. Cuts land on rune boundaries.
+
+`Chunk.Text` is exactly `source[Start:End]`, so provenance -- which span
+of which document a vector came from -- survives without recomputing
+offsets that overlap makes impossible to derive.
+
+**Pass `MaxBytes`.** It defaults to the model's full byte budget, which
+is the only figure the library knows and almost never the one you want:
+256-512 tokens per chunk is the usual working range, well under a
+2048-token window. Long-context embedders mostly save you from building
+a chunker; they do not generally retrieve better.
+
+**Pooling is deliberately absent.** Whether to store one vector per
+chunk or average them into one per document is a retrieval-design
+decision with real consequences for scoring and dedup, and it belongs to
+the caller's schema rather than to this library.
+
+Chunking multiplies embed calls -- one long article can become dozens of
+chunks -- so pair it with `BatchEmbedResults` rather than embedding
+chunks one at a time. Chunks are uniform by construction, which makes
+them a far better batching unit than whole documents.
+
 ## Structured input: fields and task prompts
 
 Most production embedding work isn't "embed this raw string." It's
