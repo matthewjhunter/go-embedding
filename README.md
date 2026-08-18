@@ -225,6 +225,47 @@ are what this catches, including every one-by-one fallback
 that legitimately lands within a few tokens of the budget; the budget
 sits below the true context window precisely so nothing lands there.
 
+## Calibration: what the ratio really is
+
+Every byte budget in this library is a token budget in disguise, converted
+by a constant. Measured against real corpora that constant is wrong often
+enough to matter -- text that was assumed to run ~3 bytes per token
+measures 1.7-2.0, and denser content (CJK, base64, source, URL-heavy
+text) runs lower still.
+
+Rather than guess, watch. Every response reports the tokens it processed,
+so pairing that with the bytes sent gives a real observation per request,
+free and without a tokenizer:
+
+```go
+c, ok := embedding.CalibrationFor("nomic-embed-text")
+if ok {
+    log.Printf("bytes/token: min %.2f p10 %.2f median %.2f (n=%d, %d clipped)",
+        c.Min, c.P10, c.Median, c.Samples, c.Clipped)
+}
+```
+
+This is **measurement only**. Nothing derives a budget from it; the static
+ratio still converts tokens to bytes. Read it to find out what the ratio
+is for your corpus and model before deciding what to do about it.
+
+Two things to know when reading a snapshot:
+
+**Check `Clipped` first.** Requests the backend clipped are counted but
+not measured -- their token count covers only the bytes that got through,
+so the ratio would come out inflated. But clipped inputs are the *densest*
+documents in a corpus, so a high count means the retained sample is
+biased toward text that tokenizes easily, and the estimate is optimistic.
+
+**Use the low end, not the middle.** Underestimating bytes per token
+clips input; overestimating wastes a little of the window. `Min` and
+`P10` are the conservative figures a budget should be derived from.
+
+Observations are in-process, per model, and not persisted, over a sliding
+window of the most recent few thousand requests. `ResetCalibration` clears
+them, which is useful for scoping a window to one specific run such as a
+full re-embed.
+
 ## Chunking
 
 A vector has fixed capacity. Pouring a whole long document into one
