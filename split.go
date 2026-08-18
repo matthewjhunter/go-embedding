@@ -50,6 +50,19 @@ type SplitOptions struct {
 	// value treats it as flat text; StructureMarkdown reads headings, records
 	// the path on each chunk, and prefers to break where sections do.
 	Structure Structure
+	// MaxTokens sizes chunks in tokens rather than bytes, which is the unit
+	// chunk size is actually reasoned about in. With Tokenizer set it is
+	// exact; without one it is converted through BytesPerToken. Zero leaves
+	// sizing to MaxBytes.
+	//
+	// When both MaxTokens and MaxBytes are set, whichever binds first wins,
+	// so MaxBytes acts as a hard ceiling on a token-sized chunk.
+	MaxTokens int
+	// Tokenizer makes MaxTokens exact. See TokenCounter.
+	Tokenizer TokenCounter
+	// BytesPerToken converts MaxTokens to a byte budget when Tokenizer is
+	// nil. Zero uses a conservative built-in guess.
+	BytesPerToken float64
 }
 
 // minFillPercent is how full a chunk must be before a boundary is worth
@@ -78,14 +91,39 @@ const minFillPercent = 50
 // Whitespace at a chunk's edges is trimmed, so with no overlap the chunks
 // reconstruct the source modulo whitespace, and no content is dropped.
 func Split(model, text string, opts SplitOptions) []Chunk {
-	maxBytes := opts.MaxBytes
-	if maxBytes <= 0 {
-		maxBytes = effectiveLimits(model, Limits{}).MaxBytes
-	}
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
-	if maxBytes <= 0 || len(text) <= maxBytes {
+
+	// A tokenizer makes MaxTokens exact; without one it converts to bytes
+	// through the ratio, the same fallback the pre-flight budget uses.
+	tc := opts.Tokenizer
+	maxTokens := opts.MaxTokens
+	maxBytes := opts.MaxBytes
+	switch {
+	case maxTokens > 0 && tc != nil:
+		// Token-governed. MaxBytes, if given, stays a hard ceiling; if not,
+		// the document itself is the only bound on the search window.
+		if maxBytes <= 0 {
+			maxBytes = len(text)
+		}
+	case maxTokens > 0:
+		// A token target with nothing to count tokens: convert it, and keep
+		// any explicit byte ceiling that is tighter.
+		maxTokens = 0
+		converted := int(float64(opts.MaxTokens) * bytesPerToken(opts.BytesPerToken))
+		if converted > 0 {
+			if maxBytes > 0 {
+				maxBytes = min(maxBytes, converted)
+			} else {
+				maxBytes = converted
+			}
+		}
+	case maxBytes <= 0:
+		maxBytes = effectiveLimits(model, Limits{}, opts.BytesPerToken).MaxBytes
+	}
+
+	if maxBytes <= 0 || (len(text) <= maxBytes && maxTokens == 0) {
 		if c, ok := newChunk(text, 0, len(text), 0); ok {
 			return []Chunk{c}
 		}
@@ -112,17 +150,27 @@ func Split(model, text string, opts SplitOptions) []Chunk {
 	// back by overlap, so an overlap at or above maxBytes would stall.
 	overlap = min(overlap, maxBytes/2)
 
+	// windowEnd is the furthest a chunk starting at start may reach.
+	windowEnd := func(start int) int {
+		end := min(start+maxBytes, len(text))
+		if maxTokens > 0 {
+			end = tokenExtent(tc, text, start, end, maxTokens)
+		}
+		return end
+	}
+
 	var chunks []Chunk
 	lastStart := -1 // Start of the last emitted chunk, after trimming.
 	for start := 0; start < len(text); {
-		if len(text)-start <= maxBytes {
+		limit := windowEnd(start)
+		if limit >= len(text) {
 			if c, ok := newChunk(text, start, len(text), len(chunks)); ok {
 				chunks = append(chunks, c)
 			}
 			break
 		}
 
-		end := breakPoint(text, start, start+maxBytes, sectionStarts)
+		end := breakPoint(text, start, limit, sectionStarts)
 		if end <= start {
 			// Only reachable on invalid UTF-8, where backing off to a rune
 			// boundary can walk past the window entirely. Advance one rune
@@ -148,7 +196,7 @@ func Split(model, text string, opts SplitOptions) []Chunk {
 		start = next
 	}
 
-	chunks = absorbSliver(text, chunks, maxBytes, opts.MinBytes)
+	chunks = absorbSliver(text, chunks, maxBytes, opts.MinBytes, tc, maxTokens)
 	for i := range chunks {
 		chunks[i].Headings = headingPathAt(headings, chunks[i].Start)
 	}
@@ -261,7 +309,7 @@ func newChunk(text string, start, end, ordinal int) (Chunk, bool) {
 // MinBytes above half of MaxBytes cannot always be honoured -- a rebalanced
 // chunk is about half the pair -- and the tail pair does not overlap after a
 // rebalance, since it is recut from the source rather than stepped through.
-func absorbSliver(text string, chunks []Chunk, maxBytes, minBytes int) []Chunk {
+func absorbSliver(text string, chunks []Chunk, maxBytes, minBytes int, tc TokenCounter, maxTokens int) []Chunk {
 	if minBytes <= 0 || len(chunks) < 2 {
 		return chunks
 	}
@@ -271,7 +319,7 @@ func absorbSliver(text string, chunks []Chunk, maxBytes, minBytes int) []Chunk {
 	}
 	prev := chunks[len(chunks)-2]
 
-	if last.End-prev.Start <= maxBytes {
+	if last.End-prev.Start <= maxBytes && fitsTokens(tc, text, prev.Start, last.End, maxTokens) {
 		merged, ok := newChunk(text, prev.Start, last.End, prev.Ordinal)
 		if !ok {
 			return chunks
@@ -304,6 +352,10 @@ func absorbSliver(text string, chunks []Chunk, maxBytes, minBytes int) []Chunk {
 	if len(head.Text) > maxBytes || len(tail.Text) > maxBytes {
 		return chunks
 	}
+	if !fitsTokens(tc, text, head.Start, head.End, maxTokens) ||
+		!fitsTokens(tc, text, tail.Start, tail.End, maxTokens) {
+		return chunks
+	}
 	chunks[len(chunks)-2] = head
 	chunks[len(chunks)-1] = tail
 	return chunks
@@ -320,5 +372,14 @@ func TokenBudget(model string) int {
 // the registered limits for the model, with any non-zero override applied,
 // and a byte budget derived from MaxTokens when the model is unregistered.
 func (c Config) Limits() Limits {
-	return effectiveLimits(c.Model, Limits{MaxBytes: c.MaxBytes, MaxTokens: c.MaxTokens})
+	return effectiveLimits(c.Model, Limits{MaxBytes: c.MaxBytes, MaxTokens: c.MaxTokens}, c.BytesPerToken)
+}
+
+// fitsTokens reports whether text[start:end] is within maxTokens. A zero
+// budget or a missing counter means tokens are not being enforced.
+func fitsTokens(tc TokenCounter, text string, start, end, maxTokens int) bool {
+	if tc == nil || maxTokens <= 0 {
+		return true
+	}
+	return tc.CountTokens(text[start:end]) <= maxTokens
 }

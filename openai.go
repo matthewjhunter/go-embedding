@@ -29,6 +29,9 @@ type OpenAIEmbedder struct {
 	limits Limits
 	// onUsage, when set, receives a Usage per request. See Config.OnUsage.
 	onUsage UsageReporter
+	// tokenizer, when set, enforces the token budget exactly instead of
+	// relying on the byte budget as a proxy. See Config.Tokenizer.
+	tokenizer TokenCounter
 }
 
 // NewOpenAIEmbedder creates an embedder that calls POST /v1/embeddings.
@@ -69,7 +72,7 @@ type openAIEmbedResponse struct {
 // (see limits.go), then, if the backend still rejects it as too long,
 // adaptively shrunk and retried (see embedShrinking).
 func (e *OpenAIEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
-	texts, err := applyLimits(texts, e.limits, e.model, e.strict)
+	texts, err := applyLimits(texts, e.limits, e.model, e.strict, e.tokenizer)
 	if err != nil {
 		return nil, err
 	}
