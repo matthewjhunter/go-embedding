@@ -96,7 +96,16 @@ const conservativeBytesPerToken = 2
 // of, configured by an operator -- a byte budget is derived from it, so a new
 // model becomes enforceable from config alone rather than needing a library
 // edit. That is the case an embedder migration runs into first.
-func effectiveLimits(model string, override Limits) Limits {
+// bytesPerToken is the ratio to use, preferring a caller's measured figure
+// over the built-in guess. See Config.BytesPerToken.
+func bytesPerToken(callerRatio float64) float64 {
+	if callerRatio > 0 {
+		return callerRatio
+	}
+	return conservativeBytesPerToken
+}
+
+func effectiveLimits(model string, override Limits, callerRatio float64) Limits {
 	l := LookupLimits(model)
 	if override.MaxBytes > 0 {
 		l.MaxBytes = override.MaxBytes
@@ -105,7 +114,7 @@ func effectiveLimits(model string, override Limits) Limits {
 		l.MaxTokens = override.MaxTokens
 	}
 	if l.MaxBytes == 0 && l.MaxTokens > 0 {
-		l.MaxBytes = l.MaxTokens * conservativeBytesPerToken
+		l.MaxBytes = int(float64(l.MaxTokens) * bytesPerToken(callerRatio))
 	}
 	return l
 }
@@ -115,7 +124,12 @@ func effectiveLimits(model string, override Limits) Limits {
 // log line is emitted so the truncation is not silent.
 //
 // Returns the (possibly truncated) texts, or an error in Strict mode.
-func applyLimits(texts []string, limits Limits, model string, strict bool) ([]string, error) {
+func applyLimits(texts []string, limits Limits, model string, strict bool, tc TokenCounter) ([]string, error) {
+	// A tokenizer makes the token budget enforceable exactly, which is what
+	// MaxBytes was ever standing in for. Prefer it and skip the proxy.
+	if tc != nil && limits.MaxTokens > 0 {
+		return applyTokenLimits(texts, limits.MaxTokens, model, strict, tc)
+	}
 	if limits.MaxBytes == 0 {
 		return texts, nil
 	}
@@ -183,4 +197,30 @@ func truncateToBytes(s string, max int) string {
 		max--
 	}
 	return s[:max]
+}
+
+// applyTokenLimits enforces a token budget exactly. In Strict mode an
+// over-budget input is an error; otherwise it is truncated to the budget and
+// logged, mirroring applyLimits.
+func applyTokenLimits(texts []string, maxTokens int, model string, strict bool, tc TokenCounter) ([]string, error) {
+	out := make([]string, len(texts))
+	for i, t := range texts {
+		trimmed := truncateToTokens(tc, t, maxTokens)
+		if len(trimmed) == len(t) {
+			out[i] = t
+			continue
+		}
+		if strict {
+			return nil, &PermanentError{Err: fmt.Errorf(
+				"embedding: input %d exceeds %s MaxTokens (%d)",
+				i, model, maxTokens,
+			), TooLong: true}
+		}
+		log.Printf(
+			"embedding: truncated input %d for model %q to %d tokens (%d of %d bytes kept)",
+			i, model, maxTokens, len(trimmed), len(t),
+		)
+		out[i] = trimmed
+	}
+	return out, nil
 }

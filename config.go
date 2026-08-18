@@ -62,6 +62,21 @@ type Config struct {
 	MaxBytes  int
 	MaxTokens int
 
+	// Tokenizer, when set, makes token budgets exact: input is truncated to
+	// MaxTokens rather than to a byte budget standing in for it. Without one,
+	// every token budget is converted through a ratio that is wrong by
+	// 50-70% on real text. See TokenCounter.
+	Tokenizer TokenCounter
+
+	// BytesPerToken is the bytes-per-token ratio to assume when converting a
+	// token budget to a byte budget, for callers with no tokenizer. Zero uses
+	// a conservative built-in guess. Derive it from CalibrationFor over your
+	// own corpus; the right value differs per corpus as well as per model,
+	// which is why the library does not learn it for you.
+	//
+	// Ignored when Tokenizer is set, since nothing then needs estimating.
+	BytesPerToken float64
+
 	// OnUsage, when set, receives a Usage after each request the backend
 	// reported a token count for. It is how a caller measures its real clip
 	// rate; without it, a backend that silently truncates over-length input
@@ -87,15 +102,17 @@ func New(cfg Config) (Embedder, error) {
 		e := NewOllamaEmbedder(cfg.BaseURL, cfg.Model)
 		e.strict = cfg.Strict
 		e.timeouts = resolveTimeouts(cfg.Timeout, cfg.PerInputTimeout)
-		e.limits = effectiveLimits(cfg.Model, Limits{MaxBytes: cfg.MaxBytes, MaxTokens: cfg.MaxTokens})
+		e.limits = cfg.Limits()
 		e.onUsage = cfg.OnUsage
+		e.tokenizer = cfg.Tokenizer
 		return e, nil
 	case BackendOpenAI:
 		e := NewOpenAIEmbedder(cfg.BaseURL, cfg.APIKey, cfg.Model)
 		e.strict = cfg.Strict
 		e.timeouts = resolveTimeouts(cfg.Timeout, cfg.PerInputTimeout)
-		e.limits = effectiveLimits(cfg.Model, Limits{MaxBytes: cfg.MaxBytes, MaxTokens: cfg.MaxTokens})
+		e.limits = cfg.Limits()
 		e.onUsage = cfg.OnUsage
+		e.tokenizer = cfg.Tokenizer
 		return e, nil
 	default:
 		return nil, fmt.Errorf("embedding: unknown backend %q", cfg.Backend)

@@ -215,7 +215,7 @@ func TestEffectiveLimits(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := effectiveLimits(tt.model, tt.override); got != tt.want {
+			if got := effectiveLimits(tt.model, tt.override, 0); got != tt.want {
 				t.Errorf("effectiveLimits = %+v, want %+v", got, tt.want)
 			}
 		})
