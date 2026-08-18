@@ -3,7 +3,6 @@ package embedding
 import (
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 )
 
@@ -55,10 +54,7 @@ func LookupLimits(model string) Limits {
 	if l, ok := modelLimits[model]; ok {
 		return l
 	}
-	if i := strings.IndexByte(model, ':'); i > 0 {
-		return modelLimits[model[:i]]
-	}
-	return Limits{}
+	return modelLimits[canonicalModel(model)]
 }
 
 // RegisterLimits adds or overrides the limits for a model. Safe to call at

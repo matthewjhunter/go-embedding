@@ -43,6 +43,14 @@ type Config struct {
 	Model   string
 	Strict  bool
 
+	// StrictModel makes an unrecognised model a construction error instead of a
+	// silent degradation. A model the registries know nothing about gets no task
+	// prefixes and no input budget, and neither failure announces itself -- the
+	// symptoms are worse results, or oversize requests a strict backend rejects.
+	// Set this when the deployment knows which model it is running, and register
+	// an alias for whatever name the serving runtime advertises.
+	StrictModel bool
+
 	// Timeout is the base deadline applied to each HTTP request, conveyed as
 	// a context deadline so failures arrive as context.DeadlineExceeded and
 	// compose with the caller's own cancellation. Zero uses DefaultTimeout;
@@ -95,6 +103,9 @@ func New(cfg Config) (Embedder, error) {
 		return nil, fmt.Errorf("embedding: BaseURL is required")
 	case cfg.Model == "":
 		return nil, fmt.Errorf("embedding: Model is required")
+	}
+	if err := checkStrictModel(cfg); err != nil {
+		return nil, err
 	}
 
 	switch cfg.Backend {
