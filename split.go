@@ -17,6 +17,14 @@ type Chunk struct {
 	End   int
 	// Ordinal is the chunk's position in the returned slice, from 0.
 	Ordinal int
+	// Headings is the heading path in force at this chunk, outermost first
+	// (e.g. {"Deployment", "Rollback", "Manual steps"}). Populated only under
+	// StructureMarkdown, and nil for a chunk preceding the first heading.
+	//
+	// It is reported, not spliced into Text: prepending it before embedding
+	// is a caller decision, and injecting it would break the guarantee that
+	// Text is exactly source[Start:End].
+	Headings []string
 }
 
 // SplitOptions tunes Split. The zero value splits at the model's registered
@@ -38,6 +46,10 @@ type SplitOptions struct {
 	// predecessor, when the two fit within MaxBytes together. A sliver of a
 	// few words embeds to a vector that matches almost nothing useful.
 	MinBytes int
+	// Structure is how much of the input's shape to understand. The zero
+	// value treats it as flat text; StructureMarkdown reads headings, records
+	// the path on each chunk, and prefers to break where sections do.
+	Structure Structure
 }
 
 // minFillPercent is how full a chunk must be before a boundary is worth
@@ -85,6 +97,16 @@ func Split(model, text string, opts SplitOptions) []Chunk {
 	// split" but "what would a chunk even mean".
 	maxBytes = max(maxBytes, utf8.UTFMax)
 
+	var headings []heading
+	var sectionStarts []int
+	if opts.Structure == StructureMarkdown {
+		headings = scanMarkdown(text)
+		sectionStarts = make([]int, len(headings))
+		for i, h := range headings {
+			sectionStarts[i] = h.Start
+		}
+	}
+
 	overlap := max(opts.Overlap, 0)
 	// Clamp so every step advances: the window moves forward by maxBytes and
 	// back by overlap, so an overlap at or above maxBytes would stall.
@@ -100,7 +122,7 @@ func Split(model, text string, opts SplitOptions) []Chunk {
 			break
 		}
 
-		end := breakPoint(text, start, start+maxBytes)
+		end := breakPoint(text, start, start+maxBytes, sectionStarts)
 		if end <= start {
 			// Only reachable on invalid UTF-8, where backing off to a rune
 			// boundary can walk past the window entirely. Advance one rune
@@ -126,21 +148,36 @@ func Split(model, text string, opts SplitOptions) []Chunk {
 		start = next
 	}
 
-	return absorbSliver(text, chunks, maxBytes, opts.MinBytes)
+	chunks = absorbSliver(text, chunks, maxBytes, opts.MinBytes)
+	for i := range chunks {
+		chunks[i].Headings = headingPathAt(headings, chunks[i].Start)
+	}
+	return chunks
 }
 
 // breakPoint picks where to end a chunk that starts at start and may run no
 // further than limit. It scans the tail of the window for the best available
 // separator, taking the first kind that lands in the acceptable range.
-func breakPoint(text string, start, limit int) int {
+func breakPoint(text string, start, limit int, sectionStarts []int) int {
 	// Only consider boundaries past this point; a break too near the start
 	// wastes the budget.
-	return breakPointAbove(text, start, limit, start+(limit-start)*minFillPercent/100)
+	return breakPointAbove(text, start, limit, start+(limit-start)*minFillPercent/100, sectionStarts)
 }
 
 // breakPointAbove is breakPoint with a caller-supplied floor, so the tail
 // rebalance can demand a boundary late enough to leave a legal final chunk.
-func breakPointAbove(text string, start, limit, floor int) int {
+func breakPointAbove(text string, start, limit, floor int, sectionStarts []int) int {
+	// A section boundary outranks everything: ending a chunk where the
+	// document ends a section beats ending it three lines into the next one.
+	// Sections can start below the fill floor -- a short section is still a
+	// better cut than a paragraph break inside the following one -- so only
+	// forward progress is required.
+	for i := len(sectionStarts) - 1; i >= 0; i-- {
+		if b := sectionStarts[i]; b > start && b <= limit {
+			return b
+		}
+	}
+
 	window := text[start:limit]
 	rel := limit - start
 
@@ -251,7 +288,7 @@ func absorbSliver(text string, chunks []Chunk, maxBytes, minBytes int) []Chunk {
 	// the pair spans at most two budgets.
 	lo := max(prev.Start, last.End-maxBytes)
 	hi := min(last.End, prev.Start+maxBytes)
-	mid := breakPointAbove(text, prev.Start, min((prev.Start+last.End)/2, hi), lo)
+	mid := breakPointAbove(text, prev.Start, min((prev.Start+last.End)/2, hi), lo, nil)
 	if mid <= prev.Start || mid >= last.End {
 		return chunks
 	}

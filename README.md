@@ -248,6 +248,38 @@ Boundaries are chosen in descending preference: paragraph, line,
 sentence, word, and only a hard cut when a single unbroken run leaves no
 choice. Cuts land on rune boundaries.
 
+### Markdown structure
+
+Set `Structure: StructureMarkdown` and `Split` reads the document's
+headings: it prefers to break where a section does, and records the
+heading path in force on each chunk.
+
+```go
+chunks := embedding.Split("nomic-embed-text", doc, embedding.SplitOptions{
+    MaxBytes:  1024,
+    Structure: embedding.StructureMarkdown,
+})
+// chunks[7].Headings == []string{"Deployment", "Rollback", "Manual steps"}
+```
+
+That path is what makes an isolated chunk searchable. A chunk reading
+"this requires careful tuning of the retry budget" matches almost
+nothing on its own; prefixed with its section path it matches what it is
+actually about. Prepending it before embedding is measurably worth doing
+-- [Anthropic reports a 35% reduction in retrieval failure](https://www.anthropic.com/engineering/contextual-retrieval)
+from adding chunk context -- but it is left to the caller, because
+splicing it into `Text` would break the guarantee that `Text` is exactly
+`source[Start:End]`.
+
+ATX (`## Section`) and setext (underlined) headings are both read, and
+fenced code blocks are skipped so a shell comment or a diff marker does
+not register as a heading.
+
+Markdown is the only structured format, deliberately: it is trivial to
+scan, structured enough to break on, and everything else converts to it.
+Convert HTML or PDF text to markdown first rather than expecting this
+library to grow a parser per format.
+
 `Chunk.Text` is exactly `source[Start:End]`, so provenance -- which span
 of which document a vector came from -- survives without recomputing
 offsets that overlap makes impossible to derive.
