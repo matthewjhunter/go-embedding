@@ -28,6 +28,11 @@ const (
 	envSuffixMaxBytes  = "_MAX_BYTES"
 	envSuffixMaxTokens = "_MAX_TOKENS"
 
+	// Serving runtimes rename models, so the mapping from a served name to a
+	// known one has to be settable without a code change.
+	envSuffixModelAlias  = "_MODEL_ALIAS"
+	envSuffixStrictModel = "_STRICT_MODEL"
+
 	// envSuffixNormalizeScores is read only in the RERANK_* namespace; the
 	// embedder config does not use it.
 	envSuffixNormalizeScores = "_NORMALIZE_SCORES"
@@ -116,6 +121,18 @@ func ConfigFromEnvPrefix(prefix string) (Config, error) {
 			return Config{}, err
 		}
 		cfg.MaxTokens = n
+	}
+	if v, src := envCascade(prefix, envSuffixModelAlias); v != "" {
+		pairs, err := parseModelAliases(src, v)
+		if err != nil {
+			return Config{}, err
+		}
+		for i := 0; i < len(pairs); i += 2 {
+			RegisterModelAlias(pairs[i], pairs[i+1])
+		}
+	}
+	if v, _ := envCascade(prefix, envSuffixStrictModel); v != "" {
+		cfg.StrictModel = v == "true" || v == "1"
 	}
 	return cfg, nil
 }

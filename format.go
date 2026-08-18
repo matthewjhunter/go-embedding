@@ -128,10 +128,8 @@ func LookupTaskPrompter(model string) TaskPrompter {
 	if p, ok := modelTaskPrompters[model]; ok {
 		return p
 	}
-	if i := strings.IndexByte(model, ':'); i > 0 {
-		if p, ok := modelTaskPrompters[model[:i]]; ok {
-			return p
-		}
+	if p, ok := modelTaskPrompters[canonicalModel(model)]; ok {
+		return p
 	}
 	return passthroughPrompter
 }
@@ -205,10 +203,8 @@ func LookupDocumentPrompter(model string) DocumentPrompter {
 	if p, ok := modelDocumentPrompters[model]; ok {
 		return p
 	}
-	if i := strings.IndexByte(model, ':'); i > 0 {
-		if p, ok := modelDocumentPrompters[model[:i]]; ok {
-			return p
-		}
+	if p, ok := modelDocumentPrompters[canonicalModel(model)]; ok {
+		return p
 	}
 	return nil
 }
