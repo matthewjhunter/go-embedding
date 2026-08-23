@@ -79,6 +79,29 @@ cfg, _ := embedding.ConfigFromEnvPrefix("MEMSTORE_EMBED")
 for the one app that needs a different model — all the other fields
 still come from the shared canonical env.
 
+### Strict by default for a service
+
+`ConfigFromEnvPrefixStrict` is `ConfigFromEnvPrefix` with `StrictModel`
+defaulted on, which is what a long-running service wants: an unrecognised
+model stops startup instead of silently embedding with no task prefixes
+and no input budget.
+
+```go
+cfg, err := embedding.ConfigFromEnvPrefixStrict("MYSVC")
+if err != nil { return err }
+log.Print(embedding.Describe(cfg))
+// embedding model "nomic-embed-text:latest" resolved as "nomic-embed-text"
+// (task prefixes: true, budget: 6000 bytes)
+```
+
+An operator who sets `MYSVC_STRICT_MODEL` or the bare
+`EMBEDDING_STRICT_MODEL` is never overridden, in either direction --
+applying the default unconditionally would silently ignore an explicit
+opt-out.
+
+`Describe` returns the line rather than logging it, so you keep your own
+logger and format.
+
 ## Backends
 
 | Backend | Endpoint | Authentication |
@@ -288,6 +311,61 @@ for _, c := range chunks {
 Boundaries are chosen in descending preference: paragraph, line,
 sentence, word, and only a hard cut when a single unbroken run leaves no
 choice. Cuts land on rune boundaries.
+
+### Sizing in tokens
+
+`MaxBytes: 1024` above is really "512 tokens at roughly 2 bytes per
+token" -- a conversion with one corpus's density baked into it. The ratio
+varies: stripped article text measures **2.75** bytes per token against
+the ~4 English prose suggests, and denser content runs lower still.
+
+`BudgetForTokens` does the conversion from what has actually been
+observed for the model:
+
+```go
+budget := embedding.BudgetForTokens("nomic-embed-text", 512)
+chunks := embedding.Split(model, article, embedding.SplitOptions{MaxBytes: budget})
+```
+
+It uses the **tenth percentile** of observed ratios, not the mean. A
+*low* bytes-per-token ratio means *more* tokens per byte, so P10 is the
+conservative end; sizing from the mean lets the densest documents in a
+mixed corpus overrun the token target, and those are exactly the ones a
+backend that rejects oversize input rather than truncating fails
+outright. Below 20 observations it falls back to a conservative 2,
+because the first documents through a fresh process are the likeliest to
+be unrepresentative.
+
+`SplitOptions.MaxTokens` applies the same conversion inline. With
+`MaxBytes` set too, whichever binds first wins -- the usual arrangement
+being a token *target* with a byte *ceiling* the backend imposes, where
+the ceiling can only ever make chunks smaller.
+
+### Chunking a record
+
+Splitting a *record* -- header re-applied to every chunk, header charged
+against the budget, offsets still addressing the body -- is what
+`SplitRecord` does:
+
+```go
+chunks := embedding.SplitRecord(model, embedding.TaskRetrievalDocument, fields, body,
+    embedding.SplitOptions{MaxTokens: 512, MaxBytes: ceiling})
+for _, c := range chunks {
+    store(c.Ordinal, c.Start, c.End, embed(c.Text)) // Start/End index body
+}
+```
+
+Two mistakes it exists to prevent, both silent:
+
+- **Splitting the rendered text instead of the body.** Chunk 0 keeps the
+  header; chunks 1..N are anonymous prose. No error, just worse retrieval
+  on exactly the long documents chunking was meant to rescue. It also
+  drifts every offset by the accumulated header bytes.
+- **Not charging the header against the budget.** Size the body at the
+  full budget, prepend a header, and every request goes over it.
+
+`Start` and `End` index the **body**, not `Text`. That is the invariant a
+caller cannot recover from getting wrong.
 
 ### Markdown structure
 
@@ -508,6 +586,57 @@ The older `BatchEmbed` returns bare `[][]float32` with nil for failed
 entries. It is deprecated: a nil entry can't be told apart from an
 input the caller meant to skip, and it discards the cause needed to
 decide whether a retry is worthwhile.
+
+### Batching records
+
+`BatchEmbedResults` takes a flat list of texts. When what you have is a
+list of records that each chunk into several, `BatchEmbedItems` flattens
+and regroups for you:
+
+```go
+items := make([]embedding.BatchItem, len(docs))
+for i, d := range docs {
+    items[i] = embedding.BatchItem{Texts: renderChunks(d)}
+}
+for i, r := range embedding.BatchEmbedItems(ctx, e, items, 25) {
+    if r.Err != nil { retry(docs[i]); continue }
+    store(docs[i], r.Vectors)
+}
+```
+
+`batchSize` counts inputs, not records: chunks are flattened before
+batching, so one long document does not get a request to itself.
+
+A failed chunk fails its **whole record**, and that is deliberate. A
+half-embedded record reads as *complete* to a retry query -- its marker
+is set, so a backfill skips it -- while leaving a permanent hole in the
+middle of the document. Failing whole means it is retried whole.
+
+## Recipe fingerprints
+
+`Fingerprint` records the model and the vector dimension. Stored vectors
+depend on more than that: the task prefix, the chunk size, and the header
+layout rendered into each chunk. Change one of those and model and dim
+are unchanged, so a store keeps serving old-recipe vectors against
+new-recipe queries -- worse than either recipe used consistently, and
+nothing reports it.
+
+```go
+recipe := embedding.RecipeFingerprint(model, embedding.TaskRetrievalDocument,
+    opts, "header-v2")
+if stored != "" && stored != recipe {
+    // clear the vectors and let the backfill re-run
+}
+```
+
+Packaging deliberately does not move it -- an Ollama tag names the same
+weights, so a serving-side rename must not force a re-embed. Neither do
+overlap or the minimum-chunk floor: those nudge vectors marginally rather
+than relocating them, and a signal that fires on every tuning tweak is
+one callers learn to ignore.
+
+What to do about a mismatch is the caller's decision; clearing stored
+vectors is a storage action this library cannot take.
 
 ## Exact token counts
 
