@@ -1,6 +1,9 @@
 package embedding
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // Fingerprint identifies what a stored vector was produced by. It is stronger
 // than Model() alone because two model versions can share a name while
@@ -28,10 +31,54 @@ type Fingerprint struct {
 	Recipe string
 }
 
-// MismatchError reports a Fingerprint comparison failure.
+// The three ways a fingerprint can move. They are separate sentinels because
+// they want different remedies, and a caller that cannot tell them apart has to
+// pick the most conservative one for all three.
+//
+// A dimension change means the stored vectors cannot be compared at all -- the
+// arithmetic does not work. A model change means they compare and the results
+// are garbage. Both usually mean something changed underneath the deployment
+// rather than in it: a tag moved, a backend swapped a model. Clearing vectors
+// automatically would hide that.
+//
+// A recipe change means the vectors compare and the results are merely
+// degraded, and it follows a deliberate edit -- a task prefix added, a chunk
+// size tuned. That is the one a caller can resolve alone, by clearing vectors
+// and letting a backfill rebuild them.
+//
+// Match with errors.Is. A single mismatch can carry several of these at once:
+// swapping a model usually moves the dimension too, so branching on one alone
+// silently mishandles the other. See RecipeOnly.
+var (
+	ErrModelChanged  = errors.New("embedding: model changed")
+	ErrDimChanged    = errors.New("embedding: dimension changed")
+	ErrRecipeChanged = errors.New("embedding: recipe changed")
+)
+
+// MismatchError reports a Fingerprint comparison failure. It wraps one sentinel
+// per field that moved, so errors.Is identifies which, while errors.As still
+// yields the fingerprints themselves.
 type MismatchError struct {
 	Stored  Fingerprint
 	Current Fingerprint
+	// changed is the sentinel per field that moved, in field order.
+	changed []error
+}
+
+// Unwrap exposes the per-field sentinels to errors.Is.
+func (e *MismatchError) Unwrap() []error { return e.changed }
+
+// RecipeOnly reports whether err is a mismatch in which the recipe moved and
+// nothing else.
+//
+// It exists because that is the query a caller's behaviour turns on -- clear
+// and rebuild, or stop and ask a human -- and it is the one easiest to get
+// subtly wrong with errors.Is alone, since answering it correctly means
+// asserting the *absence* of the other two rather than the presence of one.
+func RecipeOnly(err error) bool {
+	return errors.Is(err, ErrRecipeChanged) &&
+		!errors.Is(err, ErrModelChanged) &&
+		!errors.Is(err, ErrDimChanged)
 }
 
 func (e *MismatchError) Error() string {
@@ -88,29 +135,29 @@ func CheckFingerprint(stored, current Fingerprint) error {
 // Neither remedy is something this library can perform.
 func Reconcile(stored, current Fingerprint) (Fingerprint, error) {
 	out := stored
-	mismatch := false
+	var changed []error
 
 	if current.Model != "" {
 		if stored.Model != "" && stored.Model != current.Model {
-			mismatch = true
+			changed = append(changed, ErrModelChanged)
 		}
 		out.Model = current.Model
 	}
 	if current.Dim != 0 {
 		if stored.Dim != 0 && stored.Dim != current.Dim {
-			mismatch = true
+			changed = append(changed, ErrDimChanged)
 		}
 		out.Dim = current.Dim
 	}
 	if current.Recipe != "" {
 		if stored.Recipe != "" && stored.Recipe != current.Recipe {
-			mismatch = true
+			changed = append(changed, ErrRecipeChanged)
 		}
 		out.Recipe = current.Recipe
 	}
 
-	if mismatch {
-		return Fingerprint{}, &MismatchError{Stored: stored, Current: current}
+	if len(changed) > 0 {
+		return Fingerprint{}, &MismatchError{Stored: stored, Current: current, changed: changed}
 	}
 	return out, nil
 }

@@ -168,11 +168,38 @@ were recorded therefore adopts its recipe silently and catches the
 every existing store at upgrade would be worse than detecting one change
 later.
 
-A field both sides know and disagree on is a `*MismatchError`. What to do
-about it is yours: a model or dimension change means the stored vectors
-cannot be compared at all, while a recipe change means they can be
-compared but should not be mixed. Neither remedy is something this
-library can perform.
+### Telling the three mismatches apart
+
+A field both sides know and disagree on is a `*MismatchError`, wrapping
+one sentinel per field that moved:
+
+| sentinel | stored vectors | usually means | remedy |
+|---|---|---|---|
+| `ErrDimChanged` | cannot be compared at all | model swapped underneath | stop |
+| `ErrModelChanged` | compare, results are garbage | a tag moved | stop |
+| `ErrRecipeChanged` | compare, results degraded | a deliberate config edit | clear and rebuild |
+
+The first two usually mean something changed *underneath* the deployment
+rather than in it, so clearing vectors automatically would hide the
+mistake. A recipe change follows an edit someone made on purpose, and is
+the one a caller can resolve alone.
+
+```go
+if embedding.RecipeOnly(err) {
+    clearVectors()      // a backfill rebuilds them
+} else if err != nil {
+    return err          // needs a human
+}
+```
+
+`RecipeOnly` exists because that query is easy to get subtly wrong:
+answering it means asserting the **absence** of the other two, not the
+presence of one. A single mismatch can carry several sentinels — swapping
+a model usually moves the dimension too — so `errors.Is(err,
+ErrRecipeChanged)` alone is true in cases where clearing would be wrong.
+
+`errors.As` still yields the `*MismatchError` itself when you want the
+fingerprints.
 
 `CheckFingerprint` remains for exact comparison, but prefer `Reconcile` —
 the older function compares whole fingerprints including fields neither
