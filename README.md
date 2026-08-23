@@ -114,24 +114,96 @@ logger and format.
 
 ## Fingerprint check
 
-Two model versions can share a name while producing incompatible
-vectors (e.g. `nomic-embed-text` v1 and v2 — same name, different
-internal weights, mixed rankings come out as silent garbage). A
-fingerprint pairs the model name with the vector dimension, which is
-filled in after the first `Embed` call.
+Two model versions can share a name while producing incompatible vectors
+(`nomic-embed-text` v1 and v2 — same name, different weights, mixed
+rankings come out as silent garbage). And the *same* model produces
+vectors in a different region of the space when the text reaching it is
+assembled differently — a task prefix added, a chunk size changed, a
+field dropped from the header.
 
-Persist the fingerprint when you write your first vector, then check
-it on every subsequent open:
+A fingerprint carries all three: the model, the vector dimension, and the
+recipe (see "Recipe fingerprints" below).
+
+### The fields are progressively knowable
+
+This is what makes the check awkward, and it is worth stating plainly:
+
+| | known at store-open | known after first embed |
+|---|---|---|
+| `Model` | yes, from config | yes |
+| `Recipe` | yes, from config | yes |
+| `Dim` | **no** | yes |
+
+Store-open is the moment a mismatch is most worth catching — before a
+single stale vector is served. But the dimension is not known then, so
+comparing whole fingerprints cannot work there. `Reconcile` handles that:
+it compares only what both sides know, and returns what to persist.
 
 ```go
-current := e.Fingerprint()
-if err := embedding.CheckFingerprint(stored, current); err != nil {
+// At store-open: model and recipe are known, dim is not.
+fp, err := embedding.Reconcile(stored, embedding.Fingerprint{
+    Model:  cfg.Model,
+    Recipe: recipe,
+})
+if err != nil {
     var mismatch *embedding.MismatchError
     if errors.As(err, &mismatch) {
-        // re-embed your corpus, or refuse to serve stale vectors
+        // clear the vectors and let a backfill rebuild, or refuse to serve
     }
+    return err
+}
+persist(fp)
+
+// At the first embed: the dimension is now known.
+fp, err = embedding.Reconcile(stored, embedding.Fingerprint{
+    Model: cfg.Model, Recipe: recipe, Dim: len(vec),
+})
+```
+
+The zero value of each field means *not known yet*, not *empty*. A field
+only one side knows is adopted rather than rejected, so the first run
+records and the run after it is checked. A store written before recipes
+were recorded therefore adopts its recipe silently and catches the
+**next** change — which is the right trade, since forcing a re-embed on
+every existing store at upgrade would be worse than detecting one change
+later.
+
+### Telling the three mismatches apart
+
+A field both sides know and disagree on is a `*MismatchError`, wrapping
+one sentinel per field that moved:
+
+| sentinel | stored vectors | usually means | remedy |
+|---|---|---|---|
+| `ErrDimChanged` | cannot be compared at all | model swapped underneath | stop |
+| `ErrModelChanged` | compare, results are garbage | a tag moved | stop |
+| `ErrRecipeChanged` | compare, results degraded | a deliberate config edit | clear and rebuild |
+
+The first two usually mean something changed *underneath* the deployment
+rather than in it, so clearing vectors automatically would hide the
+mistake. A recipe change follows an edit someone made on purpose, and is
+the one a caller can resolve alone.
+
+```go
+if embedding.RecipeOnly(err) {
+    clearVectors()      // a backfill rebuilds them
+} else if err != nil {
+    return err          // needs a human
 }
 ```
+
+`RecipeOnly` exists because that query is easy to get subtly wrong:
+answering it means asserting the **absence** of the other two, not the
+presence of one. A single mismatch can carry several sentinels — swapping
+a model usually moves the dimension too — so `errors.Is(err,
+ErrRecipeChanged)` alone is true in cases where clearing would be wrong.
+
+`errors.As` still yields the `*MismatchError` itself when you want the
+fingerprints.
+
+`CheckFingerprint` remains for exact comparison, but prefer `Reconcile` —
+the older function compares whole fingerprints including fields neither
+side may know, which is why it could never be used at store-open.
 
 ## Request deadlines
 
