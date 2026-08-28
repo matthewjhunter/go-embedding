@@ -35,11 +35,17 @@ func IsRetryable(err error) bool {
 // classifyHTTPError wraps a non-2xx embed response. A 4xx is permanent — the
 // request itself is the problem — and is additionally flagged TooLong when the
 // body indicates the input exceeded the model's context window, so the
-// adaptive path can truncate and retry. 5xx and anything else are treated as
-// transient and returned unwrapped.
+// adaptive path can truncate and retry. A 5xx is normally transient and
+// returned unwrapped, with one exception: llama-server (and so Lemonade)
+// reports an input past its batch size as HTTP 500 ("input (N tokens) is too
+// large to process"). That request fails identically every time, so it is
+// classified TooLong like the 4xx form rather than left to spin on retries.
 func classifyHTTPError(err error, status int, body []byte) error {
 	if status >= 400 && status < 500 {
 		return &PermanentError{Err: err, TooLong: isContextLengthError(status, body)}
+	}
+	if status >= 500 && isContextLengthError(status, body) {
+		return &PermanentError{Err: err, TooLong: true}
 	}
 	return err
 }

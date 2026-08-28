@@ -128,6 +128,14 @@ func TestClassifyRerankHTTPError(t *testing.T) {
 		{name: "404 unknown model", status: 404, wantPermanent: true},
 		{name: "413 oversize pair", status: 413, wantPermanent: true, wantTooLong: true},
 		{
+			// llama-server rejects an over-batch pair with 500, not 4xx.
+			name:          "500 too large body",
+			status:        500,
+			body:          "input (1234 tokens) is too large to process. increase the physical batch size",
+			wantPermanent: true,
+			wantTooLong:   true,
+		},
+		{
 			name:          "400 context length body",
 			status:        400,
 			body:          "input exceeds the maximum context length",
