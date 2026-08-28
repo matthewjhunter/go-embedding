@@ -82,4 +82,24 @@ func TestClassifyHTTPError(t *testing.T) {
 			t.Error("expected 5xx to be retryable")
 		}
 	})
+
+	// llama-server (Lemonade) reports an input that exceeds its batch size as
+	// HTTP 500, not 4xx: "input (N tokens) is too large to process. increase
+	// the physical batch size". Retrying it is futile; it must be flagged
+	// TooLong so the adaptive path shrinks it and a queue can quarantine what
+	// still will not fit.
+	t.Run("5xx too long is permanent and TooLong", func(t *testing.T) {
+		body := []byte(`{"error":{"code":500,"message":"input (1234 tokens) is too large to process. increase the physical batch size","type":"server_error"}}`)
+		err := classifyHTTPError(base, http.StatusInternalServerError, body)
+		var pe *PermanentError
+		if !errors.As(err, &pe) {
+			t.Fatalf("expected *PermanentError, got %T", err)
+		}
+		if !pe.TooLong {
+			t.Error("expected TooLong=true")
+		}
+		if IsRetryable(err) {
+			t.Error("expected a too-long 5xx not to be retryable")
+		}
+	})
 }

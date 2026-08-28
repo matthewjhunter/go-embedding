@@ -367,11 +367,15 @@ func IsRerankAvailable(err error) bool {
 // so the consumer can degrade to first-stage ordering. A 4xx is the caller's
 // problem (bad request, unknown model, auth, oversize pair) and surfaces as a
 // *PermanentError, with TooLong set when the body indicates the query+document
-// pair exceeded the model's max sequence length. It mirrors classifyHTTPError;
-// the 429 split is rerank-specific — backpressure from a rerank sidecar is an
-// availability signal to retry/degrade on, not a permanent rejection.
+// pair exceeded the model's max sequence length. It mirrors classifyHTTPError,
+// including the llama-server quirk of reporting an over-batch input as 500:
+// that body is a TooLong rejection, not an outage. The 429 split is
+// rerank-specific — backpressure from a rerank sidecar is an availability
+// signal to retry/degrade on, not a permanent rejection.
 func classifyRerankHTTPError(err error, status int, body []byte) error {
 	switch {
+	case status >= 500 && isContextLengthError(status, body):
+		return &PermanentError{Err: err, TooLong: true}
 	case status == http.StatusTooManyRequests, status >= 500:
 		return fmt.Errorf("%w: %w", ErrRerankUnavailable, err)
 	case status >= 400:
