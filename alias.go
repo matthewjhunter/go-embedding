@@ -78,8 +78,20 @@ func canonicalModel(name string) string {
 	if i := strings.IndexByte(s, ':'); i > 0 {
 		s = s[:i]
 	}
+	// A leading org or namespace segment is packaging, never a different
+	// model: google/, unsloth/ and onnx-community/ all publish the same
+	// weights under their own account. Model cards and serving stacks carry
+	// one routinely, and without this an exact-match lookup misses every
+	// namespaced spelling of a model whose prefixes we know.
+	if i := strings.LastIndexByte(s, '/'); i >= 0 {
+		s = s[i+1:]
+	}
 	s = strings.TrimSuffix(s, ".gguf")
 	s = strings.TrimSuffix(s, "-gguf")
+	// Format markers, like the tag and -GGUF above: they name a conversion of
+	// the same weights, not different weights.
+	s = strings.TrimSuffix(s, "-onnx")
+	s = strings.TrimSuffix(s, "-safetensors")
 	return s
 }
 

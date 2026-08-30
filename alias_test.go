@@ -45,7 +45,12 @@ func TestCanonicalModel_DoesNotStripVariantMarkers(t *testing.T) {
 
 func TestRegisterModelAlias_ResolvesPromptsAndLimits(t *testing.T) {
 	ResetModelAliases()
-	const served = "nomic-embed-text-v1-GGUF"
+	// A name the registries genuinely do not know. It was
+	// "nomic-embed-text-v1-GGUF" until v1 was registered by name, which is
+	// the wrong kind of fixture for this test: the point is that an alias
+	// rescues a model the library has never heard of, so the fixture has to
+	// stay one.
+	const served = "acme-embed-turbo-v3"
 
 	if l := LookupLimits(served); l.MaxBytes != 0 {
 		t.Fatalf("precondition: %q already resolves", served)
@@ -161,5 +166,51 @@ func TestConfigFromEnv_StrictModel(t *testing.T) {
 	}
 	if !cfg.StrictModel {
 		t.Error("EMBEDDING_STRICT_MODEL=true did not set StrictModel")
+	}
+}
+
+// A leading org or namespace segment is packaging, never a different model.
+// Serving stacks and model cards routinely carry one -- google/, unsloth/,
+// onnx-community/ -- and an exact-match lookup misses every one of them, so a
+// model whose prefixes we know arrives with none applied. Under StrictModel
+// that is a startup refusal rather than silent degradation, which is safe but
+// is still a papercut the library can simply not have.
+func TestCanonicalStripsOrgPrefix(t *testing.T) {
+	ResetModelAliases()
+	cases := []string{
+		"google/embeddinggemma-300m",
+		"unsloth/embeddinggemma-300m-GGUF:embeddinggemma-300M-Q8_0.gguf",
+		"onnx-community/embeddinggemma-300m-ONNX",
+		"nomic-ai/nomic-embed-text-v1-GGUF:Q4_K_S",
+	}
+	for _, m := range cases {
+		info, ok := LookupModel(m)
+		if !ok || !info.HasPrompts {
+			t.Errorf("LookupModel(%q): recognised=%v prompts=%v, want both true (canonical=%q)",
+				m, ok, info.HasPrompts, info.Canonical)
+		}
+	}
+
+	// The version marker inside a path must still survive: nomic v1 and v2 are
+	// different models and must not collapse onto each other.
+	v1, _ := LookupModel("nomic-ai/nomic-embed-text-v1-GGUF")
+	v2, _ := LookupModel("nomic-ai/nomic-embed-text-v2-moe-GGUF")
+	if v1.Canonical == v2.Canonical {
+		t.Errorf("nomic v1 and v2-moe both canonicalised to %q; a version marker is not packaging", v1.Canonical)
+	}
+}
+
+// EmbeddingGemma ships at one size, so the 300m marker describes the model
+// rather than distinguishing it from a sibling. Registered explicitly rather
+// than by a general size-stripping rule, because a size suffix DOES
+// distinguish models in families that ship several.
+func TestEmbeddingGemmaSizeSpelling(t *testing.T) {
+	ResetModelAliases()
+	info, ok := LookupModel("embeddinggemma-300m")
+	if !ok || !info.HasPrompts {
+		t.Errorf("embeddinggemma-300m: recognised=%v prompts=%v, want both true", ok, info.HasPrompts)
+	}
+	if got := FormatForTask("embeddinggemma-300m", TaskRetrievalQuery, "q"); got == "q" {
+		t.Error("embeddinggemma-300m got no query prefix")
 	}
 }

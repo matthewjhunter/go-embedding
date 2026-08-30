@@ -109,9 +109,18 @@ type TaskPrompter func(task Task, text string) string
 var (
 	modelTaskPromptersMu sync.RWMutex
 	modelTaskPrompters   = map[string]TaskPrompter{
-		"nomic-embed-text":    nomicTaskPrompter,
+		"nomic-embed-text": nomicTaskPrompter,
+		// v1 is the bare model under its explicit version; v2-moe is a
+		// different one, which is why both are registered by name rather
+		// than by stripping the marker.
+		"nomic-embed-text-v1": nomicTaskPrompter,
 		"nomic-embed-text-v2": nomicTaskPrompter,
 		"embeddinggemma":      gemmaTaskPrompter,
+		// EmbeddingGemma ships at one size, so 300m describes the model
+		// rather than distinguishing it from a sibling. Registered
+		// explicitly rather than by a general size-stripping rule, because a
+		// size suffix DOES distinguish models in families that ship several.
+		"embeddinggemma-300m": gemmaTaskPrompter,
 	}
 )
 
@@ -187,7 +196,8 @@ type DocumentPrompter func(title, text string) string
 var (
 	modelDocumentPromptersMu sync.RWMutex
 	modelDocumentPrompters   = map[string]DocumentPrompter{
-		"embeddinggemma": gemmaDocumentPrompter,
+		"embeddinggemma":      gemmaDocumentPrompter,
+		"embeddinggemma-300m": gemmaDocumentPrompter,
 		// nomic-embed-text has no structural title slot — its
 		// search_document prefix wraps the entire input as one blob.
 	}
