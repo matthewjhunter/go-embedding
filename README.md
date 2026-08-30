@@ -112,6 +112,57 @@ logger and format.
 `BackendOpenAI` works against OpenAI itself, LiteLLM, vLLM, Ollama
 (>=0.1.24), Lemonade, and anything else speaking the same protocol.
 
+## Is this embedder actually working?
+
+Two things fail quietly. A backend can return well-formed vectors of the right
+dimension that carry almost no retrieval signal, and a correctly-served model
+can be named in a way the prefix registry does not recognise, so text reaches
+it unwrapped. Neither raises an error; both just make every result worse.
+
+`embedcheck` answers both in a few seconds:
+
+```
+go run ./cmd/embedcheck --base-url http://host:13305/api --model embeddinggemma
+```
+
+With no flags it reads the same `EMBEDDING_*` environment the library does, so
+checking what a service actually uses needs no arguments.
+
+It embeds four topics with two paraphrases each and asks the one question an
+embedder must answer: does a paraphrase rank above an unrelated sentence? No
+labelled dataset needed.
+
+```
+DISCRIMINATION      (four topics, two paraphrases each, within this model's own space)
+  paraphrase pairs  +0.7041 mean cosine
+  unrelated pairs   +0.3532 mean cosine
+  separation        +0.3509
+  worst margin      +0.1180  every paraphrase outranks every unrelated pair
+```
+
+**Worst margin is the number that matters**, not mean separation: it is the
+weakest paraphrase pair minus the strongest unrelated pair. Positive means
+every paraphrase outranks every unrelated pair. Negative means the
+distributions overlap, so retrieval order is unreliable rather than merely
+blunt -- and a model can post a respectable-looking mean while that is true.
+
+The report ends with measured numbers for known embedders on the same probe,
+so an unusual result is recognisable without a second backend to compare
+against (`ReferenceReports`, and note the last row is a real backend that
+returns perfectly well-formed vectors):
+
+```
+  model                       same     diff     sep      margin   rate     verdict
+  embeddinggemma              +0.6884  +0.3873  +0.3011  +0.1199  149.2/s  healthy
+  nomic-embed-text-v2-moe     +0.6478  +0.3667  +0.2810  +0.0491  396.5/s  healthy
+  nomic-embed-text-v1         +0.7727  +0.5995  +0.1732  +0.0702  552.1/s  healthy
+  embed-gemma-300m-FLM (NPU)  +0.8171  +0.7349  +0.0822  -0.1438  5.8/s    broken
+```
+
+Exit status makes it usable as a deploy gate: `0` healthy, `1` weak, `3`
+broken. `--quiet` prints the verdict line alone. `embedding.CheckHealth` is
+the library entry point if you would rather assert on the numbers in a test.
+
 ## Fingerprint check
 
 Two model versions can share a name while producing incompatible vectors
