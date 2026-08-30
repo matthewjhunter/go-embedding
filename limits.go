@@ -28,8 +28,10 @@ var (
 	modelLimitsMu sync.RWMutex
 	modelLimits   = map[string]Limits{
 		"nomic-embed-text":    {MaxBytes: 6000, MaxTokens: 2000},
+		"nomic-embed-text-v1": {MaxBytes: 6000, MaxTokens: 2000},
 		"nomic-embed-text-v2": {MaxBytes: 6000, MaxTokens: 2000},
 		"embeddinggemma":      {MaxBytes: 6000, MaxTokens: 2000},
+		"embeddinggemma-300m": {MaxBytes: 6000, MaxTokens: 2000},
 		// Reranker. bge-reranker-v2-m3 has an 8192-token context shared by the
 		// (query+document) pair. Budget the document well under that — ~6000
 		// tokens at the same conservative ~3 bytes/token used above — leaving
