@@ -247,6 +247,15 @@ type RerankConfig struct {
 	// a large candidate set gets a budget proportional to its size. Zero uses
 	// DefaultPerInputTimeout; NoTimeout disables the scaling.
 	PerInputTimeout time.Duration
+
+	// DialTimeout bounds the TCP connect of each request. Zero uses
+	// DefaultDialTimeout; NoTimeout disables it. Mirrors Config.DialTimeout,
+	// and is likewise ignored when HTTPClient is set.
+	DialTimeout time.Duration
+
+	// HTTPClient, when set, is used verbatim for every request. Mirrors
+	// Config.HTTPClient.
+	HTTPClient *http.Client
 }
 
 // NewReranker constructs a Reranker from cfg. Returns an error if any required
@@ -272,6 +281,11 @@ func NewReranker(cfg RerankConfig) (Reranker, error) {
 	switch cfg.Backend {
 	case RerankBackendJina:
 		jr := NewJinaReranker(cfg.BaseURL, cfg.APIKey, cfg.Model)
+		if cfg.HTTPClient != nil {
+			jr.client = cfg.HTTPClient
+		} else {
+			jr.client = newHTTPClient(resolveDialTimeout(cfg.DialTimeout))
+		}
 		jr.strict = cfg.Strict
 		jr.timeouts = resolveTimeouts(cfg.Timeout, cfg.PerInputTimeout)
 		rr = jr

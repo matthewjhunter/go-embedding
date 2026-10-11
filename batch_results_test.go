@@ -3,6 +3,8 @@ package embedding
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -323,5 +325,41 @@ func TestBatchEmbed_StillCollapsesFailuresToNil(t *testing.T) {
 	}
 	if singleCalls.Load() != 3 {
 		t.Errorf("expected 3 single-call fallbacks, got %d", singleCalls.Load())
+	}
+}
+
+// A batch that never reached the backend must not be retried one input at a
+// time: the failure is the network's, not any input's, and splitting only
+// multiplies the dial timeout by the batch size.
+func TestBatchEmbedResults_UnreachableBackendDoesNotSplit(t *testing.T) {
+	dial := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("i/o timeout")}
+	f := &fakeEmbedder{
+		model: "test",
+		embed: func(_ []string) ([][]float32, error) {
+			return nil, fmt.Errorf("ollama embed: %w", dial)
+		},
+	}
+
+	got, err := BatchEmbedResults(context.Background(), f, []string{"a", "b", "c"}, 3, nil)
+	if err == nil {
+		t.Fatal("want an error when every input fails")
+	}
+	if calls := f.calls.Load(); calls != 1 {
+		t.Errorf("Embed called %d times, want 1: a dial failure must not fall back one-by-one", calls)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len(got)=%d, want 3", len(got))
+	}
+	for i, r := range got {
+		var ie *ItemError
+		if !errors.As(r.Err, &ie) {
+			t.Fatalf("result %d: error %v is not an *ItemError", i, r.Err)
+		}
+		if ie.Index != i {
+			t.Errorf("result %d: ItemError.Index = %d", i, ie.Index)
+		}
+		if !errors.Is(r.Err, dial) {
+			t.Errorf("result %d: error %v does not wrap the dial failure", i, r.Err)
+		}
 	}
 }

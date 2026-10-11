@@ -2,6 +2,7 @@ package embedding
 
 import (
 	"fmt"
+	"net/http"
 	"time"
 )
 
@@ -63,6 +64,20 @@ type Config struct {
 	// request the flat base budget.
 	PerInputTimeout time.Duration
 
+	// DialTimeout bounds the TCP connect of each request, independently of
+	// Timeout: a backend that never answers the connect fails here, in
+	// seconds, instead of consuming a budget sized for a slow model. Zero
+	// uses DefaultDialTimeout; NoTimeout disables it. Ignored when HTTPClient
+	// is set.
+	DialTimeout time.Duration
+
+	// HTTPClient, when set, is used verbatim for every request, for callers
+	// that need a proxy, custom TLS, or instrumentation. The caller then owns
+	// the connect behaviour too: DialTimeout is not applied to it. The
+	// request deadline (Timeout, PerInputTimeout) still is, since it travels
+	// in the request context.
+	HTTPClient *http.Client
+
 	// MaxBytes and MaxTokens override the registered per-model budget (see
 	// limits.go). Zero means "use whatever is registered". Setting MaxTokens
 	// for an unregistered model derives a byte budget from it, so a new model
@@ -111,6 +126,7 @@ func New(cfg Config) (Embedder, error) {
 	switch cfg.Backend {
 	case BackendOllama:
 		e := NewOllamaEmbedder(cfg.BaseURL, cfg.Model)
+		e.client = cfg.httpClient()
 		e.strict = cfg.Strict
 		e.timeouts = resolveTimeouts(cfg.Timeout, cfg.PerInputTimeout)
 		e.limits = cfg.Limits()
@@ -119,6 +135,7 @@ func New(cfg Config) (Embedder, error) {
 		return e, nil
 	case BackendOpenAI:
 		e := NewOpenAIEmbedder(cfg.BaseURL, cfg.APIKey, cfg.Model)
+		e.client = cfg.httpClient()
 		e.strict = cfg.Strict
 		e.timeouts = resolveTimeouts(cfg.Timeout, cfg.PerInputTimeout)
 		e.limits = cfg.Limits()
@@ -128,4 +145,13 @@ func New(cfg Config) (Embedder, error) {
 	default:
 		return nil, fmt.Errorf("embedding: unknown backend %q", cfg.Backend)
 	}
+}
+
+// httpClient returns the caller's client when one was supplied, else the
+// default client with the configured dial timeout.
+func (cfg Config) httpClient() *http.Client {
+	if cfg.HTTPClient != nil {
+		return cfg.HTTPClient
+	}
+	return newHTTPClient(resolveDialTimeout(cfg.DialTimeout))
 }

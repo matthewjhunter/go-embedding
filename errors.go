@@ -2,6 +2,7 @@ package embedding
 
 import (
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 )
@@ -30,6 +31,18 @@ func (e *PermanentError) Unwrap() error { return e.Err }
 func IsRetryable(err error) bool {
 	var pe *PermanentError
 	return !errors.As(err, &pe)
+}
+
+// isDialError reports whether err is a failure to reach the backend at all:
+// the connect was refused, timed out, or found no route, or the name did not
+// resolve. Such a failure belongs to the network, not to any input, so
+// sending the same inputs again one at a time cannot help. A request deadline
+// that expires mid-connect is deliberately not matched: it is ambiguous
+// between a dead backend and a slow one, and a retry with a smaller batch is
+// the right response to the latter.
+func isDialError(err error) bool {
+	var oe *net.OpError
+	return errors.As(err, &oe) && oe.Op == "dial"
 }
 
 // classifyHTTPError wraps a non-2xx embed response. A 4xx is permanent — the
