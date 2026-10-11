@@ -58,7 +58,7 @@ e, err := embedding.New(cfg)
 
 Recognised vars: `EMBEDDING_BACKEND`, `EMBEDDING_BASE_URL`,
 `EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_STRICT`,
-`EMBEDDING_TIMEOUT`, `EMBEDDING_PER_INPUT_TIMEOUT`,
+`EMBEDDING_TIMEOUT`, `EMBEDDING_PER_INPUT_TIMEOUT`, `EMBEDDING_DIAL_TIMEOUT`,
 `EMBEDDING_MAX_BYTES`, `EMBEDDING_MAX_TOKENS`. Unset (or empty) vars
 fall back to `DefaultConfig`. Unknown backend names, unparseable bools,
 durations, and budgets return an error. A budget must be positive: `0` is
@@ -298,6 +298,19 @@ stream of spurious timeouts.
 
 `RerankConfig` carries the same two fields, scaling on the document
 count.
+
+### Connect timeouts
+
+The request deadline is sized for inference, and connecting is not
+where inference time goes. A backend that answers at all connects in
+well under a second; one that never answers (a blackholed address, a
+host behind a firewall that drops rather than rejects) would otherwise
+hang each attempt for the whole request budget, and then each retry.
+So the connect is bounded separately by `DialTimeout`, default
+`DefaultDialTimeout` (5s), settable from the environment as
+`EMBEDDING_DIAL_TIMEOUT` (a duration, or `none`). It is applied by the
+default HTTP client; a caller who supplies `HTTPClient` for a proxy,
+custom TLS, or instrumentation owns the connect behaviour too.
 
 ## Limits
 

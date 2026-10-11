@@ -24,6 +24,7 @@ const (
 
 	envSuffixTimeout         = "_TIMEOUT"
 	envSuffixPerInputTimeout = "_PER_INPUT_TIMEOUT"
+	envSuffixDialTimeout     = "_DIAL_TIMEOUT"
 
 	envSuffixMaxBytes  = "_MAX_BYTES"
 	envSuffixMaxTokens = "_MAX_TOKENS"
@@ -107,6 +108,13 @@ func ConfigFromEnvPrefix(prefix string) (Config, error) {
 			return Config{}, err
 		}
 		cfg.PerInputTimeout = d
+	}
+	if v, src := envCascade(prefix, envSuffixDialTimeout); v != "" {
+		d, err := parseTimeoutEnv(src, v)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.DialTimeout = d
 	}
 	if v, src := envCascade(prefix, envSuffixMaxBytes); v != "" {
 		n, err := parseBudgetEnv(src, v)

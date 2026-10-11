@@ -49,7 +49,7 @@ func NewJinaReranker(baseURL, apiKey, model string) *JinaReranker {
 		baseURL:  strings.TrimRight(baseURL, "/"),
 		apiKey:   apiKey,
 		model:    model,
-		client:   &http.Client{},
+		client:   newHTTPClient(DefaultDialTimeout),
 		timeouts: resolveTimeouts(0, 0),
 	}
 }

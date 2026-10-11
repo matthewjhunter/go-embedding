@@ -19,7 +19,8 @@ type OllamaEmbedder struct {
 	dim     atomic.Int32
 	strict  bool
 	// timeouts bounds each HTTP request; see Config.Timeout. The deprecated
-	// constructor leaves it at the defaults rather than unbounded.
+	// constructor leaves it, and the client's dial timeout, at the defaults
+	// rather than unbounded.
 	timeouts timeouts
 	// limits is the resolved byte/token budget; see effectiveLimits.
 	limits Limits
@@ -38,7 +39,7 @@ func NewOllamaEmbedder(baseURL, model string) *OllamaEmbedder {
 	return &OllamaEmbedder{
 		baseURL:  strings.TrimRight(baseURL, "/"),
 		model:    model,
-		client:   &http.Client{},
+		client:   newHTTPClient(DefaultDialTimeout),
 		timeouts: resolveTimeouts(0, 0),
 		limits:   LookupLimits(model),
 	}

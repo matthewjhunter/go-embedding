@@ -2,6 +2,8 @@ package embedding
 
 import (
 	"context"
+	"net"
+	"net/http"
 	"time"
 )
 
@@ -18,6 +20,15 @@ const (
 	// when Config.PerInputTimeout is zero.
 	DefaultPerInputTimeout = 2 * time.Second
 )
+
+// DefaultDialTimeout bounds the TCP connect of each request when
+// Config.DialTimeout is zero. It is separate from the request budget because
+// connecting is not where inference time goes: a backend that answers at all
+// does so within a second, on a LAN or across the internet, while one that
+// never answers (a blackholed address, a host behind a firewall that drops
+// rather than rejects) would otherwise consume a budget sized for a slow
+// model, per attempt, per retry.
+const DefaultDialTimeout = 5 * time.Second
 
 // NoTimeout disables a deadline. As Config.Timeout it makes requests
 // unbounded, leaving cancellation entirely to the caller's context (the
@@ -50,6 +61,32 @@ func resolveTimeouts(base, perInput time.Duration) timeouts {
 		perInput = DefaultPerInputTimeout
 	}
 	return timeouts{base: base, perInput: perInput}
+}
+
+// resolveDialTimeout turns a configured (possibly zero) dial timeout into the
+// value handed to net.Dialer, where zero means no timeout. As with the request
+// budget, zero config means "use the default" and NoTimeout is the opt out.
+func resolveDialTimeout(d time.Duration) time.Duration {
+	switch {
+	case d < 0:
+		return 0
+	case d == 0:
+		return DefaultDialTimeout
+	}
+	return d
+}
+
+// newHTTPClient builds the client a backend uses when the caller supplies
+// none: the default transport, with the connect bounded by dial. The request
+// deadline is applied per request through the context (see timeouts), not
+// here, so the client itself carries no overall Timeout.
+func newHTTPClient(dial time.Duration) *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.DialContext = (&net.Dialer{
+		Timeout:   dial,
+		KeepAlive: 30 * time.Second,
+	}).DialContext
+	return &http.Client{Transport: tr}
 }
 
 // disabled reports whether this policy sets no deadline at all.

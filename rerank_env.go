@@ -91,5 +91,12 @@ func RerankConfigFromEnvPrefix(prefix string) (RerankConfig, error) {
 		}
 		cfg.PerInputTimeout = d
 	}
+	if v, src := envCascadeTo(prefix, DefaultRerankEnvPrefix, envSuffixDialTimeout); v != "" {
+		d, err := parseTimeoutEnv(src, v)
+		if err != nil {
+			return RerankConfig{}, err
+		}
+		cfg.DialTimeout = d
+	}
 	return cfg, nil
 }
