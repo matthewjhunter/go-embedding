@@ -100,6 +100,18 @@ func BatchEmbedResults(
 			if cause == nil {
 				cause = ErrShortBatch
 				log.Printf("embedding: batch [%d:%d] returned %d vectors for %d inputs; falling back to one-by-one", batchStart, batchEnd, len(vectors), len(batch))
+			} else if isDialError(err) {
+				// The request never reached the backend, so no input can be
+				// to blame and a one-by-one retry would only pay the dial
+				// timeout once per input instead of once per batch.
+				log.Printf("embedding: batch [%d:%d] could not reach the backend (%v); not retrying inputs individually", batchStart, batchEnd, err)
+				for i := range batch {
+					out[batchStart+i].Err = &ItemError{Index: batchStart + i, Err: err, Batch: err}
+				}
+				if progress != nil {
+					progress(batchEnd, total)
+				}
+				continue
 			} else {
 				log.Printf("embedding: batch [%d:%d] failed (%v); falling back to one-by-one", batchStart, batchEnd, err)
 			}

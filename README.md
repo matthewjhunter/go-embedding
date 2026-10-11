@@ -312,6 +312,12 @@ So the connect is bounded separately by `DialTimeout`, default
 default HTTP client; a caller who supplies `HTTPClient` for a proxy,
 custom TLS, or instrumentation owns the connect behaviour too.
 
+A batch that fails to connect is not retried one input at a time. The
+failure is the network's, not any input's, and splitting would only
+pay the dial timeout once per input instead of once per batch. Every
+input in that batch is reported failed with the dial error as its
+cause.
+
 ## Limits
 
 `Embed` consults a per-model byte limit registered for nomic-embed-text
